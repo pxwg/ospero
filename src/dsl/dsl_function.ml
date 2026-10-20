@@ -137,6 +137,9 @@ let interpret context (Action run) = run context
 
 module Name_map = Map.Make (String)
 
+type ('metadata, 'relation, 'action, 'consumption, 'error) registry =
+  ('metadata, 'relation, 'action, 'consumption, 'error) t Name_map.t
+
 type registration_error =
   | Duplicate_function of string
 
