@@ -19,9 +19,7 @@ type issue =
     Function and raw-handler callbacks are deferred, not executed here. *)
 val elaborate :
   decode_metadata:'metadata Dsl_metadata.decoder ->
-  ('metadata, 'relation,
-   ('metadata, 'relation, 'consumption, 'error) Dsl_function.action,
-   'consumption, 'error) Dsl_function.registry ->
+  ('metadata, 'relation, 'consumption, 'error) Dsl_function.registry ->
   Dsl_syntax.file list ->
   (('metadata, ('metadata, 'relation, 'consumption, 'error) Dsl_function.action)
      Observation.project,

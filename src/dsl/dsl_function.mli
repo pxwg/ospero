@@ -13,19 +13,13 @@ type ('action, _) body =
   | Optional : ('action, 'action Observation.Source.content list option) body
   | Required : ('action, 'action Observation.Source.content list) body
 
-type ('metadata, 'relation, 'action, 'consumption, 'error) t
+type ('metadata, 'relation, 'consumption, 'error) t
 
 (** Deferred calls can only be obtained through checked conversion.
     Constructing definitions and converting source do not execute callbacks. *)
 type ('metadata, 'relation, 'consumption, 'error) action
 
-(** A definition whose generated bodies use this module's deferred actions. *)
-type ('metadata, 'relation, 'consumption, 'error) definition =
-  ('metadata, 'relation,
-   ('metadata, 'relation, 'consumption, 'error) action,
-   'consumption, 'error) t
-
-type ('metadata, 'relation, 'action, 'consumption, 'error) registry
+type ('metadata, 'relation, 'consumption, 'error) registry
 
 type check_error = {
   range : Dsl_syntax.range;
@@ -38,13 +32,15 @@ type registration_error = Duplicate_function of string
 val make :
   string ->
   args:'args arguments ->
-  body:('action, 'body) body ->
+  body:(('metadata, 'relation, 'consumption, 'error) action, 'body) body ->
   ('metadata Observation.context ->
    'args ->
    'body ->
-   (('metadata, 'relation, 'action, 'consumption) Observation.contribution list,
+   (('metadata, 'relation,
+     ('metadata, 'relation, 'consumption, 'error) action, 'consumption)
+      Observation.contribution list,
     'error list) result) ->
-  ('metadata, 'relation, 'action, 'consumption, 'error) t
+  ('metadata, 'relation, 'consumption, 'error) t
 
 (** Raw handlers can emit content but cannot contribute definitions or relations. *)
 val raw :
@@ -52,23 +48,21 @@ val raw :
   ('metadata Observation.context ->
    string ->
    ('consumption Observation.Observed.content list, 'error list) result) ->
-  ('metadata, 'relation, 'action, 'consumption, 'error) t
+  ('metadata, 'relation, 'consumption, 'error) t
 
-val name : ('metadata, 'relation, 'action, 'consumption, 'error) t -> string
+val name : ('metadata, 'relation, 'consumption, 'error) t -> string
 
 (** Functions and raw handlers share one namespace; duplicate names are rejected. *)
 val register :
-  ('metadata, 'relation, 'action, 'consumption, 'error) t list ->
-  (('metadata, 'relation, 'action, 'consumption, 'error) registry,
+  ('metadata, 'relation, 'consumption, 'error) t list ->
+  (('metadata, 'relation, 'consumption, 'error) registry,
    registration_error) result
 
 (** Check every retained subtree, including argument and body requirements.
     [lookup] resolves project labels. Conversion stops at the first error. *)
 val convert_body :
   lookup:(string -> Graph.Vertex_id.t option) ->
-  ('metadata, 'relation,
-   ('metadata, 'relation, 'consumption, 'error) action,
-   'consumption, 'error) registry ->
+  ('metadata, 'relation, 'consumption, 'error) registry ->
   Dsl_syntax.content Dsl_syntax.located list ->
   (('metadata, 'relation, 'consumption, 'error) action
      Observation.Source.content list,

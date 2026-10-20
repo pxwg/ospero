@@ -13,20 +13,30 @@ type ('action, _) body =
   | Optional : ('action, 'action Observation.Source.content list option) body
   | Required : ('action, 'action Observation.Source.content list) body
 
+(** A deferred call whose generated notes may contain more deferred calls. *)
+type ('metadata, 'relation, 'consumption, 'error) action =
+  | Action of
+      ('metadata Observation.context ->
+       (('metadata, 'relation,
+         ('metadata, 'relation, 'consumption, 'error) action, 'consumption)
+          Observation.contribution list,
+        'error list) result)
+
 (** Package a parameter specification with a callback accepting those values. *)
-type ('metadata, 'relation, 'action, 'consumption, 'error) t =
+type ('metadata, 'relation, 'consumption, 'error) t =
   | Function : {
       name : string;
       arguments : 'args arguments;
-      body : ('action, 'body) body;
+      body : (('metadata, 'relation, 'consumption, 'error) action, 'body) body;
       run :
         'metadata Observation.context ->
         'args ->
         'body ->
-        (('metadata, 'relation, 'action, 'consumption)
+        (('metadata, 'relation,
+          ('metadata, 'relation, 'consumption, 'error) action, 'consumption)
            Observation.contribution list,
          'error list) result;
-    } -> ('metadata, 'relation, 'action, 'consumption, 'error) t
+    } -> ('metadata, 'relation, 'consumption, 'error) t
   | Raw of {
       name : string;
       run :
@@ -104,20 +114,6 @@ let decode_body : type a b.
     | Optional, body -> Ok body
     | Required, Some body -> Ok body
 
-(** A deferred call whose generated notes may contain more deferred calls. *)
-type ('metadata, 'relation, 'consumption, 'error) action =
-  | Action of
-      ('metadata Observation.context ->
-       (('metadata, 'relation,
-         ('metadata, 'relation, 'consumption, 'error) action, 'consumption)
-          Observation.contribution list,
-        'error list) result)
-
-type ('metadata, 'relation, 'consumption, 'error) definition =
-  ('metadata, 'relation,
-   ('metadata, 'relation, 'consumption, 'error) action,
-   'consumption, 'error) t
-
 (** The body has already been recursively checked and converted to Source
     content by the caller. Preparing a call does not run its callback. *)
 let prepare ~lookup ~range definition ~arguments ~body =
@@ -147,8 +143,8 @@ let interpret context (Action run) = run context
 
 module Name_map = Map.Make (String)
 
-type ('metadata, 'relation, 'action, 'consumption, 'error) registry =
-  ('metadata, 'relation, 'action, 'consumption, 'error) t Name_map.t
+type ('metadata, 'relation, 'consumption, 'error) registry =
+  ('metadata, 'relation, 'consumption, 'error) t Name_map.t
 
 type registration_error =
   | Duplicate_function of string
