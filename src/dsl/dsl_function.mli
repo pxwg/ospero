@@ -19,6 +19,12 @@ type ('metadata, 'relation, 'action, 'consumption, 'error) t
     Constructing definitions and converting source do not execute callbacks. *)
 type ('metadata, 'relation, 'consumption, 'error) action
 
+(** A definition whose generated bodies use this module's deferred actions. *)
+type ('metadata, 'relation, 'consumption, 'error) definition =
+  ('metadata, 'relation,
+   ('metadata, 'relation, 'consumption, 'error) action,
+   'consumption, 'error) t
+
 type ('metadata, 'relation, 'action, 'consumption, 'error) registry
 
 type check_error = {

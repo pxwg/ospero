@@ -113,6 +113,11 @@ type ('metadata, 'relation, 'consumption, 'error) action =
           Observation.contribution list,
         'error list) result)
 
+type ('metadata, 'relation, 'consumption, 'error) definition =
+  ('metadata, 'relation,
+   ('metadata, 'relation, 'consumption, 'error) action,
+   'consumption, 'error) t
+
 (** The body has already been recursively checked and converted to Source
     content by the caller. Preparing a call does not run its callback. *)
 let prepare ~lookup ~range definition ~arguments ~body =
