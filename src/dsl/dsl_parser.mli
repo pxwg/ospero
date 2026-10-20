@@ -11,5 +11,8 @@ type error = {
     Balanced brackets are ordinary text; @ introduces a function call.
     Optional call bodies may follow whitespace.
     String ranges include quotes. Parsing stops at the first syntax error.
-    Typst block delimiters and metadata syntax are not yet defined. *)
+    Metadata uses records with whitespace-separated name = value fields,
+    comma-separated lists, strings, signed decimal integers and booleans.
+    Metadata records and lists can nest; trailing commas are not accepted.
+    Typst block delimiters are not yet defined. *)
 val parse : file:string -> string -> (Dsl_syntax.file, error) result

@@ -10,6 +10,19 @@ type 'a located = {
   range : range;
 }
 
+(** Restricted data values, before project-specific decoding. *)
+type value =
+  | String of string
+  | Int of int
+  | Bool of bool
+  | List of value located list
+  | Record of field list
+
+and field = {
+  name : string located;
+  value : value located;
+}
+
 type argument =
   | Reference of string
   | String of string
@@ -33,6 +46,7 @@ type label = {
 type note = {
   target : string located;
   title : string located;
+  metadata : value located option;
   body : content located list;
 }
 

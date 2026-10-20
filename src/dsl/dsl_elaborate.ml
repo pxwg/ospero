@@ -13,6 +13,7 @@ type issue =
     }
   | Unknown_note_target of string Dsl_syntax.located
   | Invalid_call of Dsl_function.check_error
+  | Invalid_metadata of Dsl_metadata.diagnostic
 
 type labels = {
   bindings : Graph.Vertex_id.t Name_map.t;
@@ -65,15 +66,16 @@ let collect_labels (files : Dsl_syntax.file list) =
   | [] -> Ok { bindings = !bindings; identities = List.rev !identities }
   | issues -> Error issues
 
-(** Explicit notes share the supplied metadata until metadata syntax is defined.
+(** Decode each explicit note's metadata; omission means an empty record.
     Duplicate definitions remain visible to Observation. *)
-let elaborate ~metadata registry files =
+let elaborate ~(decode_metadata : 'metadata Dsl_metadata.decoder) registry files =
   match collect_labels files with
   | Error issues -> Error issues
   | Ok labels ->
       let resolve = lookup labels in
       let notes = ref [] in
       let issues = ref [] in
+      let metadata_failed = ref false in
       List.iter
         (List.iter (fun (declaration : Dsl_syntax.declaration Dsl_syntax.located) ->
           match declaration.value with
@@ -89,8 +91,23 @@ let elaborate ~metadata registry files =
               (match body with
                | Error error -> issues := Invalid_call error :: !issues
                | Ok _ -> ());
-              match target, body with
-              | Some id, Ok body ->
+              let metadata_input =
+                match note.metadata with
+                | Some value -> value
+                | None ->
+                    { Dsl_syntax.value = Dsl_syntax.Record [];
+                      range = declaration.range }
+              in
+              let metadata = decode_metadata metadata_input in
+              (match metadata with
+               | Error errors ->
+                   metadata_failed := true;
+                   List.iter
+                     (fun error -> issues := Invalid_metadata error :: !issues)
+                     errors
+               | Ok _ -> ());
+              match target, body, metadata with
+              | Some id, Ok body, Ok metadata ->
                   notes := {
                     Observation.Source.id;
                     title = note.title.value;
@@ -100,7 +117,7 @@ let elaborate ~metadata registry files =
               | _ -> ()))
         files;
       match List.rev !issues with
-      | [] ->
+      | [] when not !metadata_failed ->
           Ok {
             Observation.identities = labels.identities;
             notes = List.rev !notes;

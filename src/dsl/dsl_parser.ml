@@ -104,6 +104,78 @@ let string_literal state =
   in
   loop ()
 
+let integer_literal state =
+  let start = state.pos in
+  if peek state = Some '-' then state.pos <- state.pos + 1;
+  let digits = state.pos in
+  while
+    match peek state with Some ('0' .. '9') -> true | _ -> false
+  do state.pos <- state.pos + 1 done;
+  if state.pos = digits then fail_here state "Expected integer digits";
+  let text = String.sub state.text start (state.pos - start) in
+  match int_of_string_opt text with
+  | Some value -> value
+  | None -> fail state start state.pos "Integer is out of range"
+
+let rec data_value state : Dsl_syntax.value Dsl_syntax.located =
+  skip_whitespace state;
+  let start = state.pos in
+  let value : Dsl_syntax.value =
+    match peek state with
+    | Some '"' -> String (string_literal state).value
+    | Some ('-' | '0' .. '9') -> Int (integer_literal state)
+    | Some '[' ->
+        state.pos <- state.pos + 1;
+        skip_whitespace state;
+        let rec elements reversed =
+          let element = data_value state in
+          skip_whitespace state;
+          match peek state with
+          | Some ']' ->
+              state.pos <- state.pos + 1;
+              List.rev (element :: reversed)
+          | Some ',' ->
+              state.pos <- state.pos + 1;
+              elements (element :: reversed)
+          | _ -> fail_here state "Expected ',' or ']'"
+        in
+        if peek state = Some ']' then begin
+          state.pos <- state.pos + 1;
+          List []
+        end else List (elements [])
+    | Some '{' ->
+        state.pos <- state.pos + 1;
+        let rec fields reversed =
+          skip_whitespace state;
+          match peek state with
+          | Some '}' ->
+              state.pos <- state.pos + 1;
+              List.rev reversed
+          | None -> fail state start state.pos "Unterminated record"
+          | _ ->
+              let name = identifier state in
+              expect state '=';
+              let value = data_value state in
+              let field : Dsl_syntax.field = { name; value } in
+              fields (field :: reversed)
+        in
+        Record (fields [])
+    | Some character when is_start character ->
+        let word = identifier state in
+        (match word.value with
+         | "true" -> Bool true
+         | "false" -> Bool false
+         | _ ->
+             fail state word.range.start word.range.stop
+               "Expected a data value; names and calls are not supported here")
+    | _ -> fail_here state "Expected a data value"
+  in
+  (* Values must end at whitespace, a separator, or a closing delimiter. *)
+  (match peek state with
+   | None | Some (' ' | '\t' | '\r' | '\n' | ',' | ']' | '}') -> ()
+   | _ -> fail_here state "Expected a separator after data value");
+  located state start value
+
 let argument state =
   skip_whitespace state;
   let start = state.pos in
@@ -206,6 +278,7 @@ let note state =
   let target = identifier state in
   expect state '{';
   let title = ref None in
+  let metadata = ref None in
   let contents = ref None in
   let rec fields () =
     skip_whitespace state;
@@ -223,7 +296,7 @@ let note state =
           | Some contents -> contents
           | None -> fail state target.range.start state.pos "Missing body"
         in
-        Dsl_syntax.Note { target; title; body }
+        Dsl_syntax.Note { target; title; metadata = !metadata; body }
     | _ ->
         let field = identifier state in
         expect state '=';
@@ -231,7 +304,11 @@ let note state =
         (match field.value with
          | "title" when !title = None -> title := Some (string_literal state)
          | "body" when !contents = None -> contents := Some (body state)
-         | "title" | "body" ->
+         | "metadata" when !metadata = None ->
+             if peek state <> Some '{' then
+               fail_here state "Expected a metadata record";
+             metadata := Some (data_value state)
+         | "title" | "body" | "metadata" ->
              fail state field.range.start field.range.stop "Duplicate field"
          | _ ->
              fail state field.range.start field.range.stop "Unknown note field");
