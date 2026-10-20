@@ -35,13 +35,22 @@ type 'relation edge = {
 module Vertex_map = Map.Make (Vertex_id)
 module Edge_map = Map.Make (Edge_id)
 
+type topology = {
+  vertices : Vertex_id.t list;
+  edges : Edge_id.t list;
+  endpoints : (Vertex_id.t * Vertex_id.t) Edge_map.t;
+  incoming : Edge_id.t list Vertex_map.t;
+  outgoing : Edge_id.t list Vertex_map.t;
+}
+
+type ('note, 'relation) values = {
+  vertices : 'note Vertex_map.t;
+  edges : 'relation Edge_map.t;
+}
+
 type ('note, 'relation) t = {
-  vertices : 'note vertex list;
-  edges : 'relation edge list;
-  vertex_index : 'note vertex Vertex_map.t;
-  edge_index : 'relation edge Edge_map.t;
-  incoming_index : 'relation edge list Vertex_map.t;
-  outgoing_index : 'relation edge list Vertex_map.t;
+  topology : topology;
+  values : ('note, 'relation) values;
 }
 
 type 'metadata note = {
@@ -102,24 +111,64 @@ let assemble vertices edges =
       let incoming_index, outgoing_index =
         List.fold_left
           (fun (incoming, outgoing) (edge : _ edge) ->
-            (add edge.target edge incoming, add edge.source edge outgoing))
+            (add edge.target edge.id incoming, add edge.source edge.id outgoing))
           (empty, empty) edges
       in
       Ok {
-        vertices;
-        edges;
-        vertex_index;
-        edge_index;
-        incoming_index = Vertex_map.map List.rev incoming_index;
-        outgoing_index = Vertex_map.map List.rev outgoing_index;
+        topology = {
+          vertices = List.map (fun (vertex : _ vertex) -> vertex.id) vertices;
+          edges = List.map (fun (edge : _ edge) -> edge.id) edges;
+          endpoints =
+            Edge_map.map (fun (edge : _ edge) -> edge.source, edge.target) edge_index;
+          incoming = Vertex_map.map List.rev incoming_index;
+          outgoing = Vertex_map.map List.rev outgoing_index;
+        };
+        values = {
+          vertices = Vertex_map.map (fun (vertex : _ vertex) -> vertex.note) vertex_index;
+          edges = Edge_map.map (fun (edge : _ edge) -> edge.relation) edge_index;
+        };
       }
   | issues -> Error issues
 
-let vertices graph = graph.vertices
-let edges graph = graph.edges
+let vertex graph id =
+  { id; note = Vertex_map.find id graph.values.vertices }
 
-let find_vertex graph id = Vertex_map.find_opt id graph.vertex_index
-let find_edge graph id = Edge_map.find_opt id graph.edge_index
+let edge graph id =
+  let source, target = Edge_map.find id graph.topology.endpoints in
+  { id; source; target; relation = Edge_map.find id graph.values.edges }
 
-let incoming graph id = Vertex_map.find_opt id graph.incoming_index
-let outgoing graph id = Vertex_map.find_opt id graph.outgoing_index
+let map ~vertex:map_vertex ~edge:map_edge graph =
+  let vertices =
+    List.fold_left
+      (fun values id ->
+        Vertex_map.add id (map_vertex (vertex graph id)) values)
+      Vertex_map.empty graph.topology.vertices
+  in
+  let edges =
+    List.fold_left
+      (fun values id ->
+        Edge_map.add id (map_edge (edge graph id)) values)
+      Edge_map.empty graph.topology.edges
+  in
+  { topology = graph.topology; values = { vertices; edges } }
+
+let vertices graph = List.map (vertex graph) graph.topology.vertices
+let edges graph = List.map (edge graph) graph.topology.edges
+
+let find_vertex graph id =
+  Option.map (fun note -> { id; note })
+    (Vertex_map.find_opt id graph.values.vertices)
+
+let find_edge graph id =
+  Option.map
+    (fun (source, target) ->
+      { id; source; target; relation = Edge_map.find id graph.values.edges })
+    (Edge_map.find_opt id graph.topology.endpoints)
+
+let incoming graph id =
+  Option.map (List.map (edge graph))
+    (Vertex_map.find_opt id graph.topology.incoming)
+
+let outgoing graph id =
+  Option.map (List.map (edge graph))
+    (Vertex_map.find_opt id graph.topology.outgoing)

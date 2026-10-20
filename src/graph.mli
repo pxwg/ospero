@@ -71,6 +71,16 @@ val assemble :
   'relation edge list ->
   (('note, 'relation) t, issue list) result
 
+(** Transform payloads while sharing the original topology and adjacency indexes.
+    Callbacks receive original declarations and return only new payloads.
+    They run once per vertex, then once per edge, in assembly input order.
+    Payload types may change; identities, endpoints and order are preserved. *)
+val map :
+  vertex:('note vertex -> 'new_note) ->
+  edge:('relation edge -> 'new_relation) ->
+  ('note, 'relation) t ->
+  ('new_note, 'new_relation) t
+
 (** Return vertices in their assembly input order. *)
 val vertices :
   ('note, 'relation) t -> 'note vertex list
