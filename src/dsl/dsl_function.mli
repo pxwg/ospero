@@ -7,7 +7,11 @@ type _ arguments =
   | Nil : unit arguments
   | Cons : 'a argument * 'b arguments -> ('a * 'b) arguments
 
-type body_requirement = Forbidden | Optional | Required
+(** Body requirements determine the value received by the callback. *)
+type ('action, _) body =
+  | Forbidden : ('action, unit) body
+  | Optional : ('action, 'action Observation.Source.content list option) body
+  | Required : ('action, 'action Observation.Source.content list) body
 
 type ('metadata, 'relation, 'action, 'consumption, 'error) t
 
@@ -24,14 +28,14 @@ type check_error = {
 
 type registration_error = Duplicate_function of string
 
-(** [body] defaults to [Forbidden]. An explicitly empty body satisfies [Required]. *)
+(** An explicitly empty body satisfies [Required]; an absent body does not. *)
 val make :
   string ->
   args:'args arguments ->
-  ?body:body_requirement ->
+  body:('action, 'body) body ->
   ('metadata Observation.context ->
    'args ->
-   'action Observation.Source.content list option ->
+   'body ->
    (('metadata, 'relation, 'action, 'consumption) Observation.contribution list,
     'error list) result) ->
   ('metadata, 'relation, 'action, 'consumption, 'error) t

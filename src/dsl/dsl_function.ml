@@ -8,21 +8,21 @@ type _ arguments =
   | Nil : unit arguments
   | Cons : 'a argument * 'b arguments -> ('a * 'b) arguments
 
-type body_requirement =
-  | Forbidden
-  | Optional
-  | Required
+type ('action, _) body =
+  | Forbidden : ('action, unit) body
+  | Optional : ('action, 'action Observation.Source.content list option) body
+  | Required : ('action, 'action Observation.Source.content list) body
 
 (** Package a parameter specification with a callback accepting those values. *)
 type ('metadata, 'relation, 'action, 'consumption, 'error) t =
   | Function : {
       name : string;
       arguments : 'args arguments;
-      body : body_requirement;
+      body : ('action, 'body) body;
       run :
         'metadata Observation.context ->
         'args ->
-        'action Observation.Source.content list option ->
+        'body ->
         (('metadata, 'relation, 'action, 'consumption)
            Observation.contribution list,
          'error list) result;
@@ -35,7 +35,7 @@ type ('metadata, 'relation, 'action, 'consumption, 'error) t =
         ('consumption Observation.Observed.content list, 'error list) result;
     }
 
-let make name ~args ?(body = Forbidden) run =
+let make name ~args ~body run =
   Function { name; arguments = args; body; run }
 
 let raw name run = Raw { name; run }
@@ -89,15 +89,20 @@ let rec decode_arguments : type a.
             | Ok values -> Ok (value, values)
 
 (** An explicitly empty body satisfies Required. *)
-let check_body ~range requirement body =
-  match requirement, body with
-  | Forbidden, Some _ ->
-      Error { range; message = "This function does not accept a body" }
-  | Required, None ->
-      Error { range; message = "This function requires a body" }
-  | Forbidden, None
-  | Optional, _
-  | Required, Some _ -> Ok ()
+let decode_body : type a b.
+    range:Dsl_syntax.range ->
+    (a, b) body ->
+    a Observation.Source.content list option ->
+    (b, check_error) result =
+  fun ~range requirement supplied ->
+    match requirement, supplied with
+    | Forbidden, Some _ ->
+        Error { range; message = "This function does not accept a body" }
+    | Required, None ->
+        Error { range; message = "This function requires a body" }
+    | Forbidden, None -> Ok ()
+    | Optional, body -> Ok body
+    | Required, Some body -> Ok body
 
 (** A deferred call whose generated notes may contain more deferred calls. *)
 type ('metadata, 'relation, 'consumption, 'error) action =
@@ -115,9 +120,9 @@ let prepare ~lookup ~range definition ~arguments ~body =
   | Raw _ ->
       Error { range; message = "Expected a function, but this name is a raw handler" }
   | Function definition ->
-      match check_body ~range definition.body body with
+      match decode_body ~range definition.body body with
       | Error error -> Error error
-      | Ok () ->
+      | Ok body ->
           match decode_arguments ~lookup ~range definition.arguments arguments with
           | Error error -> Error error
           | Ok values ->
