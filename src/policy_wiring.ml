@@ -17,6 +17,7 @@ type issue =
   | Cyclic_dependencies of Id.t list
 
 type ('vertex, 'edge, 'issue) compiled = {
+  initial : ('vertex, 'edge) Graph.t;
   morphism : ('vertex, 'edge, 'issue) Policy.outcome Clone.morphism;
   outputs : Id.t list;
 }
@@ -54,7 +55,7 @@ let compile ~initial ~input calls =
   | [] ->
       let rec compose_layers slots outputs morphism pending =
         match pending with
-        | [] -> Ok { morphism; outputs }
+        | [] -> Ok { initial; morphism; outputs }
         | _ ->
             let ready, waiting =
               List.partition
@@ -103,3 +104,7 @@ let compile ~initial ~input calls =
                   (Clone.compose ~after:layer ~before:morphism) waiting
       in
       compose_layers (Id_map.singleton input 0) [input] (Clone.identity 1) calls
+
+let evaluate compiled =
+  Clone.apply compiled.morphism [Policy.Success compiled.initial]
+  |> List.combine compiled.outputs
