@@ -28,6 +28,12 @@ type ('vertex, 'edge) assignment = {
   edge : Graph.Edge_id.t -> 'edge;
 }
 
+type (_, 'vertex, 'edge) ports =
+  | Nil : (unit, 'vertex, 'edge) ports
+  | Cons :
+      ('p, 'vertex, 'edge) ports ->
+      (('vertex, 'edge) Graph.t * 'p, 'vertex, 'edge) ports
+
 type ('vertex, 'edge, 'issue) t = {
   arity : int;
   check : ('vertex, 'edge) Graph.t list -> 'issue list;
@@ -43,9 +49,23 @@ type ('vertex, 'edge, 'issue) invocation = {
 let invocation id definition ~inputs =
   { id; definition; inputs }
 
-let make ~arity ?(check = fun _ -> []) run =
-  if arity < 0 then invalid_arg "Policy arity must be non-negative";
-  { arity; check; run }
+let rec port_count : type p v e. (p, v, e) ports -> int = function
+  | Nil -> 0
+  | Cons rest -> 1 + port_count rest
+
+let rec decode_ports : type p v e. (p, v, e) ports -> (v, e) Graph.t list -> p =
+  fun ports states ->
+    match ports, states with
+    | Nil, [] -> ()
+    | Cons rest, state :: states -> state, decode_ports rest states
+    | _ -> invalid_arg "Policy input count mismatch"
+
+let make ports ?(check = fun _ -> []) run =
+  {
+    arity = port_count ports;
+    check = (fun states -> check (decode_ports ports states));
+    run = (fun states -> run (decode_ports ports states));
+  }
 
 let lift ~initial ~id definition =
   Clone.operation definition.arity (fun inputs ->

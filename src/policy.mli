@@ -34,6 +34,14 @@ type ('vertex, 'edge) assignment = {
   edge : Graph.Edge_id.t -> 'edge;
 }
 
+(** Ordered input states decoded into nested pairs ending in unit.
+    [Nil] describes a zero-input policy; [Cons Nil] describes one input. *)
+type (_, 'vertex, 'edge) ports =
+  | Nil : (unit, 'vertex, 'edge) ports
+  | Cons :
+      ('p, 'vertex, 'edge) ports ->
+      (('vertex, 'edge) Graph.t * 'p, 'vertex, 'edge) ports
+
 (** Inputs are ordered states; repeated inputs are distinct ports.
     The evaluator supplies exactly [arity] inputs from the common state space.
     [check] describes applicability: only an empty issue list permits [run].
@@ -62,12 +70,13 @@ val invocation :
   ('vertex, 'edge, 'issue) invocation
 
 (** Declare a policy without executing either callback.
-    [check] defaults to accepting all inputs. Zero-input policies are allowed.
-    Raises [Invalid_argument] if [arity] is negative. *)
+    Arity is derived from [ports]; callbacks receive its typed input shape.
+    [check] defaults to accepting all inputs. Internally, list inputs are
+    decoded before invoking callbacks; a count mismatch raises [Invalid_argument]. *)
 val make :
-  arity:int ->
-  ?check:(('vertex, 'edge) Graph.t list -> 'issue list) ->
-  (('vertex, 'edge) Graph.t list -> ('vertex, 'edge) assignment) ->
+  ('p, 'vertex, 'edge) ports ->
+  ?check:('p -> 'issue list) ->
+  ('p -> ('vertex, 'edge) assignment) ->
   ('vertex, 'edge, 'issue) t
 
 (** Lift a definition at a fixed invocation identity into a result operation.
