@@ -1,7 +1,6 @@
 module Source = struct
   type 'action content =
     | Text of string
-    | Typst of string
     | Action of 'action
 
   type ('metadata, 'action) note = {
@@ -20,7 +19,6 @@ type ('metadata, 'action) project = {
 module Observed = struct
   type 'consumption content =
     | Text of string
-    | Typst of string
     | Consume of 'consumption
 end
 
@@ -131,7 +129,6 @@ let expand ~interpret project =
         List.iter
           (function
             | Source.Text text -> emit (Observed.Text text)
-            | Source.Typst source -> emit (Observed.Typst source)
             | Source.Action action ->
                 match interpret context action with
                 | Ok contributions -> List.iter contribute contributions

@@ -207,6 +207,53 @@ let arguments state =
     in
     loop []
 
+let starts_with state prefix =
+  let length = String.length prefix in
+  state.pos + length <= String.length state.text
+  && String.sub state.text state.pos length = prefix
+
+(** Probe using a separate cursor so ordinary text remains untouched. *)
+let raw_opening state =
+  if (state.pos > 0 && is_continue state.text.[state.pos - 1])
+     || not (starts_with state "raw") then None
+  else
+    let probe = { state with pos = state.pos + 3 } in
+    let whitespace () =
+      let before = probe.pos in
+      skip_whitespace probe;
+      if before = probe.pos then fail_here probe "Expected whitespace"
+    in
+    try
+      whitespace ();
+      let format = identifier probe in
+      whitespace ();
+      if peek probe <> Some '{' then fail_here probe "Expected raw delimiter";
+      probe.pos <- probe.pos + 1;
+      let tag =
+        if peek probe = Some '|' then ""
+        else (identifier probe).value
+      in
+      if peek probe <> Some '|' then fail_here probe "Expected raw delimiter";
+      probe.pos <- probe.pos + 1;
+      Some (format, tag, probe.pos)
+    with Failed _ -> None
+
+let raw_block state start format tag source_start =
+  state.pos <- source_start;
+  let closing = "|" ^ tag ^ "}" in
+  while state.pos < String.length state.text
+        && not (starts_with state closing) do
+    state.pos <- state.pos + 1
+  done;
+  if state.pos = String.length state.text then
+    fail state start state.pos "Unterminated raw block";
+  let source =
+    located state source_start
+      (String.sub state.text source_start (state.pos - source_start))
+  in
+  state.pos <- state.pos + String.length closing;
+  { Dsl_syntax.format; source }
+
 let rec invocation state =
   (* The caller consumed @; the function name must follow immediately. *)
   let name = identifier state in
@@ -245,6 +292,16 @@ and body state =
         flush ();
         state.pos <- state.pos + 1;
         List.rev !contents
+    | Some 'r' ->
+        (match raw_opening state with
+         | None -> append 'r'
+         | Some (format, tag, source_start) ->
+             flush ();
+             let start = state.pos in
+             let raw = raw_block state start format tag source_start in
+             contents := located state start (Dsl_syntax.Raw raw) :: !contents;
+             text_start := state.pos);
+        loop ()
     | Some '[' -> incr depth; append '['; loop ()
     | Some ']' -> decr depth; append ']'; loop ()
     | Some '@' ->

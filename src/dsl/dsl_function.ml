@@ -27,11 +27,22 @@ type ('metadata, 'relation, 'action, 'consumption, 'error) t =
            Observation.contribution list,
          'error list) result;
     } -> ('metadata, 'relation, 'action, 'consumption, 'error) t
+  | Raw of {
+      name : string;
+      run :
+        'metadata Observation.context ->
+        string ->
+        ('consumption Observation.Observed.content list, 'error list) result;
+    }
 
 let make name ~args ?(body = Forbidden) run =
   Function { name; arguments = args; body; run }
 
-let name (Function definition) = definition.name
+let raw name run = Raw { name; run }
+
+let name = function
+  | Function definition -> definition.name
+  | Raw definition -> definition.name
 
 type check_error = {
   range : Dsl_syntax.range;
@@ -99,14 +110,28 @@ type ('metadata, 'relation, 'consumption, 'error) action =
 
 (** The body has already been recursively checked and converted to Source
     content by the caller. Preparing a call does not run its callback. *)
-let prepare ~lookup ~range (Function definition) ~arguments ~body =
-  match check_body ~range definition.body body with
-  | Error error -> Error error
-  | Ok () ->
-      match decode_arguments ~lookup ~range definition.arguments arguments with
+let prepare ~lookup ~range definition ~arguments ~body =
+  match definition with
+  | Raw _ ->
+      Error { range; message = "Expected a function, but this name is a raw handler" }
+  | Function definition ->
+      match check_body ~range definition.body body with
       | Error error -> Error error
-      | Ok values ->
-          Ok (Action (fun context -> definition.run context values body))
+      | Ok () ->
+          match decode_arguments ~lookup ~range definition.arguments arguments with
+          | Error error -> Error error
+          | Ok values ->
+              Ok (Action (fun context -> definition.run context values body))
+
+let prepare_raw ~range definition ~source =
+  match definition with
+  | Function _ ->
+      Error { range; message = "Expected a raw handler, but this name is a function" }
+  | Raw definition ->
+      Ok (Action (fun context ->
+        Result.map
+          (List.map (fun content -> Observation.Emit content))
+          (definition.run context source)))
 
 let interpret context (Action run) = run context
 
@@ -141,7 +166,17 @@ and convert_content ~lookup registry
     (content : Dsl_syntax.content Dsl_syntax.located) =
   match content.value with
   | Dsl_syntax.Text text -> Ok (Observation.Source.Text text)
-  | Dsl_syntax.Typst source -> Ok (Observation.Source.Typst source)
+  | Dsl_syntax.Raw raw ->
+      (match Name_map.find_opt raw.format.value registry with
+       | None ->
+           Error {
+             range = raw.format.range;
+             message = Printf.sprintf "Unknown raw format '%s'" raw.format.value;
+           }
+       | Some definition ->
+           Result.map (fun action -> Observation.Source.Action action)
+             (prepare_raw ~range:raw.format.range definition
+                ~source:raw.source.value))
   | Dsl_syntax.Action invocation ->
       match Name_map.find_opt invocation.name.value registry with
       | None ->

@@ -14,5 +14,10 @@ type error = {
     Metadata uses records with whitespace-separated name = value fields,
     comma-separated lists, strings, signed decimal integers and booleans.
     Metadata records and lists can nest; trailing commas are not accepted.
-    Typst block delimiters are not yet defined. *)
+    Raw blocks use raw FORMAT {|source|} or raw FORMAT {TAG|source|TAG}.
+    FORMAT and nonempty TAG follow identifier rules; FORMAT is unrestricted
+    by language names. Whitespace separates raw, FORMAT and the delimiter.
+    Only complete opening sequences at identifier boundaries introduce raw
+    blocks. Their contents are preserved byte-for-byte until the exact closing
+    delimiter; source ranges exclude delimiters. *)
 val parse : file:string -> string -> (Dsl_syntax.file, error) result

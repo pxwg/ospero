@@ -27,6 +27,12 @@ type argument =
   | Reference of string
   | String of string
 
+(** Opaque source; its range excludes the opening and closing delimiters. *)
+type raw = {
+  format : string located;
+  source : string located;
+}
+
 type invocation = {
   name : string located;
   arguments : argument located list;
@@ -35,7 +41,7 @@ type invocation = {
 
 and content =
   | Text of string
-  | Typst of string
+  | Raw of raw
   | Action of invocation
 
 type label = {

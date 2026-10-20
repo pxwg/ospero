@@ -2,12 +2,10 @@
 module Source : sig
   type 'action content =
     | Text of string
-    | Typst of string
     | Action of 'action
 
   (** Constructing a note does not register its identity.
-      Metadata follows the project schema; the body preserves input order.
-      Typst fragments are opaque to observation. *)
+      Metadata follows the project schema; the body preserves input order. *)
   type ('metadata, 'action) note = {
     id : Graph.Vertex_id.t;
     title : string;
@@ -30,7 +28,6 @@ module Observed : sig
       contribute further definitions or graph edges. *)
   type 'consumption content =
     | Text of string
-    | Typst of string
     | Consume of 'consumption
 end
 
