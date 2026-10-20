@@ -46,9 +46,6 @@ type ('vertex, 'edge, 'issue) invocation = {
   definition : ('vertex, 'edge, 'issue) t;
 }
 
-let invocation id definition ~inputs =
-  { id; definition; inputs }
-
 let rec port_count : type p v e. (p, v, e) ports -> int = function
   | Nil -> 0
   | Cons rest -> 1 + port_count rest

@@ -61,14 +61,6 @@ type ('vertex, 'edge, 'issue) invocation = {
   definition : ('vertex, 'edge, 'issue) t;
 }
 
-(** Declare a call without executing callbacks. Identity uniqueness, input
-    resolution, port counts and acyclicity are checked during assembly. *)
-val invocation :
-  Invocation_id.t ->
-  ('vertex, 'edge, 'issue) t ->
-  inputs:Invocation_id.t list ->
-  ('vertex, 'edge, 'issue) invocation
-
 (** Declare a policy without executing either callback.
     Arity is derived from [ports]; callbacks receive its typed input shape.
     [check] defaults to accepting all inputs. Internally, list inputs are
