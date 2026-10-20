@@ -1,5 +1,10 @@
 (** Policy definitions over a common fixed-topology state space. *)
 
+(* TODO: Once the API stabilizes, revisit hiding the erased check/run fields
+   and lift behind an internal kernel boundary. For now, application code should
+   evaluate through Policy_wiring, which binds inputs to the captured initial
+   state; direct low-level calls rely on caller discipline for arity and topology. *)
+
 (** Computation identities, distinct from knowledge-graph identities. *)
 module Invocation_id : sig
   type t
