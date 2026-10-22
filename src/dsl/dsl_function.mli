@@ -10,8 +10,12 @@ type _ arguments =
 (** Body requirements determine the value received by the callback. *)
 type ('action, _) body =
   | Forbidden : ('action, unit) body
-  | Optional : ('action, 'action Observation.Source.content list option) body
-  | Required : ('action, 'action Observation.Source.content list) body
+  | Optional :
+      ('action,
+       'action Observation.Source.content Provenance.located list Provenance.located option) body
+  | Required :
+      ('action,
+       'action Observation.Source.content Provenance.located list Provenance.located) body
 
 type ('metadata, 'relation, 'consumption, 'error) t
 
@@ -59,13 +63,16 @@ val register :
    registration_error) result
 
 (** Check every retained subtree, including argument and body requirements.
-    [lookup] resolves project labels. Conversion stops at the first error. *)
+    [lookup] resolves project labels. Conversion stops at the first error.
+    Each converted occurrence retains its complete source range, including
+    raw delimiters and action bodies. Nested body occurrences retain their
+    own ranges. *)
 val convert_body :
   lookup:(string -> Graph.Vertex_id.t option) ->
   ('metadata, 'relation, 'consumption, 'error) registry ->
   Dsl_syntax.content Dsl_syntax.located list ->
   (('metadata, 'relation, 'consumption, 'error) action
-     Observation.Source.content list,
+     Observation.Source.content Provenance.located list,
    check_error) result
 
 val interpret :

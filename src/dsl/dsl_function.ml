@@ -10,8 +10,12 @@ type _ arguments =
 
 type ('action, _) body =
   | Forbidden : ('action, unit) body
-  | Optional : ('action, 'action Observation.Source.content list option) body
-  | Required : ('action, 'action Observation.Source.content list) body
+  | Optional :
+      ('action,
+       'action Observation.Source.content Provenance.located list Provenance.located option) body
+  | Required :
+      ('action,
+       'action Observation.Source.content Provenance.located list Provenance.located) body
 
 (** A deferred call whose generated notes may contain more deferred calls. *)
 type ('metadata, 'relation, 'consumption, 'error) action =
@@ -102,7 +106,7 @@ let rec decode_arguments : type a.
 let decode_body : type a b.
     range:Dsl_syntax.range ->
     (a, b) body ->
-    a Observation.Source.content list option ->
+    a Observation.Source.content Provenance.located list Provenance.located option ->
     (b, check_error) result =
   fun ~range requirement supplied ->
     match requirement, supplied with
@@ -167,7 +171,12 @@ let rec convert_body ~lookup registry contents =
     | content :: rest ->
         match convert_content ~lookup registry content with
         | Error error -> Error error
-        | Ok content -> collect (content :: reversed) rest
+        | Ok value ->
+            let range = content.Dsl_syntax.range in
+            let span : Provenance.span =
+              { file = range.file; start = range.start; stop = range.stop }
+            in
+            collect (Provenance.located ~span value :: reversed) rest
   in
   collect [] contents
 
@@ -198,8 +207,12 @@ and convert_content ~lookup registry
             match invocation.body with
             | None -> Ok None
             | Some contents ->
-                Result.map (fun contents -> Some contents)
-                  (convert_body ~lookup registry contents)
+                let range = contents.range in
+                let span : Provenance.span =
+                  { file = range.file; start = range.start; stop = range.stop }
+                in
+                Result.map (fun body -> Some (Provenance.located ~span body))
+                  (convert_body ~lookup registry contents.value)
           in
           match body with
           | Error error -> Error error

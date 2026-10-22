@@ -36,7 +36,7 @@ type raw = {
 type invocation = {
   name : string located;
   arguments : argument located list;
-  body : content located list option;
+  body : content located list located option;
 }
 
 and content =
@@ -53,7 +53,7 @@ type note = {
   target : string located;
   title : string located;
   metadata : value located option;
-  body : content located list;
+  body : content located list located;
 }
 
 type declaration =

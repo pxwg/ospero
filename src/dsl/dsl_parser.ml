@@ -320,7 +320,8 @@ and body state =
         loop ()
     | Some character -> append character; loop ()
   in
-  loop ()
+  let contents = loop () in
+  located state opening contents
 
 let label state =
   skip_whitespace state;

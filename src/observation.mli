@@ -5,12 +5,18 @@ module Source : sig
     | Action of 'action
 
   (** Constructing a note does not register its identity.
-      Metadata follows the project schema; the body preserves input order. *)
+      Metadata follows the project schema; the body preserves input order.
+      Each body occurrence carries its optional source span independently
+      of the text or action value. The outer body wrapper locates the whole
+      container, including an explicitly empty body. *)
   type ('metadata, 'action) note = {
     id : Graph.Vertex_id.t;
-    title : string;
-    metadata : 'metadata;
-    body : 'action content list;
+    title : string Provenance.located;
+    metadata : 'metadata Provenance.located;
+        (** The optional span covers the original metadata as a whole,
+            independently of the project-defined decoded value.
+            Omitted metadata has no direct source span. *)
+    body : 'action content Provenance.located list Provenance.located;
   }
 end
 
@@ -19,10 +25,25 @@ end
     Duplicate registrations are harmless; duplicate definitions are conflicts. *)
 type ('metadata, 'action) project = {
   identities : Graph.Vertex_id.t list;
-  notes : ('metadata, 'action) Source.note list;
+  notes : ('metadata, 'action) Source.note Provenance.located list;
+}
+
+(** The immediate action that generated a definition. Its owning note can
+    itself be generated; this link does not replace direct source locations. *)
+type generation = {
+  source : Graph.Vertex_id.t;
+  action : Provenance.span option;
 }
 
 module Observed : sig
+  (** Note fields retain direct source locations until assembly separates
+      semantic values from the observation's source registry. *)
+  type 'metadata note = {
+    title : string Provenance.located;
+    metadata : 'metadata Provenance.located;
+    generated_from : generation option;
+  }
+
   (** Final body data, with no pending observation actions.
       Consumption declarations are interpreted by consumers; they do not
       contribute further definitions or graph edges. *)
@@ -47,11 +68,12 @@ type 'metadata context = {
 
 (** Ordered contributions returned by an action interpreter. *)
 type ('metadata, 'relation, 'action, 'consumption) contribution =
-  | Define of ('metadata, 'action) Source.note
+  | Define of ('metadata, 'action) Source.note Provenance.located
       (** Contribute a definition for a registered identity.
           The core observes its body under that identity; subsequent
           contributions still belong to the original current note.
-          Duplicate definitions are conflicts. *)
+          Duplicate definitions are conflicts. The wrapper records the direct
+          definition span, not the generating action's span. *)
   | Relate of {
       target : Graph.Vertex_id.t;
       relation : 'relation;
@@ -69,12 +91,15 @@ type ('metadata, 'relation, 'action, 'consumption, 'error) interpreter =
    'error list) result
 
 (** Expanded graph and body declarations, awaiting assembly.
-    Lists preserve declaration order and duplicate entries for validation. *)
+    Lists preserve declaration order and duplicate entries for validation.
+    Vertex title and metadata retain their direct source spans until assembly
+    separates semantic values from the source registry. *)
 type ('metadata, 'relation, 'consumption) declarations = {
-  vertices : 'metadata Graph.note Graph.vertex list;
-  edges : 'relation Graph.edge list;
+  vertices : 'metadata Observed.note Graph.vertex Provenance.located list;
+  edges : 'relation Graph.edge Provenance.located list;
   bodies :
-    (Graph.Vertex_id.t * 'consumption Observed.content list) list;
+    (Graph.Vertex_id.t *
+     'consumption Observed.content Provenance.located list Provenance.located) list;
 }
 
 (** Structural diagnostics and errors reported by the project interpreter. *)
@@ -91,7 +116,12 @@ type 'error issue =
 (** Freeze registered identities and the initial explicit-definition snapshot,
     then expand note bodies using the interpreter.
     Edge IDs use the source identity and its zero-based Relate occurrence index.
-    Endpoint existence is checked during assembly. *)
+    Endpoint existence is checked during assembly.
+    Plain text retains its source span. Each Relate and Emit contribution
+    inherits the current action's span, including absence of a source span.
+    Define records the generating action separately from the supplied direct
+    definition and field spans. Nested definitions retain their immediate
+    generating note identity; no source position is fabricated. *)
 val expand :
   interpret:('metadata, 'relation, 'action, 'consumption, 'error) interpreter ->
   ('metadata, 'action) project ->
@@ -108,6 +138,9 @@ val assemble :
   ('metadata, 'relation, 'consumption) declarations ->
   (('metadata, 'relation, 'consumption) t, 'error issue list) result
 
+(** The semantic graph contains unwrapped title and metadata values.
+    Source locations remain owned by this observation, independently of
+    policy computations. *)
 val graph :
   ('metadata, 'relation, 'consumption) t ->
   ('metadata, 'relation) Graph.knowledge_graph
@@ -118,5 +151,54 @@ val graph :
 val body :
   ('metadata, 'relation, 'consumption) t ->
   Graph.Vertex_id.t ->
-  'consumption Observed.content list option
+  'consumption Observed.content Provenance.located list option
+
+(** Return the source of the action that contributed an edge.
+    [None] means the edge is absent; [Some None] means it exists without a
+    known source span. Sources are retained outside the semantic graph. *)
+val edge_source :
+  ('metadata, 'relation, 'consumption) t ->
+  Graph.Edge_id.t ->
+  Provenance.span option option
+
+(** Return the direct source span of a note's original metadata as a whole.
+    [None] means the vertex is absent; [Some None] means it exists without a
+    known metadata span. Generated definitions retain their supplied metadata
+    span; the generating action's span is not substituted for a missing one. *)
+val metadata_source :
+  ('metadata, 'relation, 'consumption) t ->
+  Graph.Vertex_id.t ->
+  Provenance.span option option
+
+(** Return the direct source span of a note's original title.
+    [None] means the vertex is absent; [Some None] means it exists without a
+    known title span. A generating action's span is not substituted. *)
+val title_source :
+  ('metadata, 'relation, 'consumption) t ->
+  Graph.Vertex_id.t ->
+  Provenance.span option option
+
+(** Return the direct source span of the complete note definition.
+    [None] means the vertex is absent; [Some None] means it has no known
+    direct definition span. Generated notes preserve their supplied span;
+    no action or title span is substituted. *)
+val note_source :
+  ('metadata, 'relation, 'consumption) t ->
+  Graph.Vertex_id.t ->
+  Provenance.span option option
+
+(** The original body container span, including delimiters when supplied by
+    the DSL. Empty bodies retain this location. Absence follows [note_source]. *)
+val body_source :
+  ('metadata, 'relation, 'consumption) t ->
+  Graph.Vertex_id.t ->
+  Provenance.span option option
+
+(** [None] means an unknown vertex; [Some None] means an initial definition.
+    Generated definitions record the immediate action and owning note even
+    when the action itself has no source span. Direct field spans are unchanged. *)
+val generated_from :
+  ('metadata, 'relation, 'consumption) t ->
+  Graph.Vertex_id.t ->
+  generation option option
 

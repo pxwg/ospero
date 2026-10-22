@@ -86,7 +86,7 @@ let elaborate ~(decode_metadata : 'metadata Dsl_metadata.decoder) registry files
                | None -> issues := Unknown_note_target note.target :: !issues
                | Some _ -> ());
               let body =
-                Dsl_function.convert_body ~lookup:resolve registry note.body
+                Dsl_function.convert_body ~lookup:resolve registry note.body.value
               in
               (match body with
                | Error error -> issues := Invalid_call error :: !issues
@@ -108,11 +108,31 @@ let elaborate ~(decode_metadata : 'metadata Dsl_metadata.decoder) registry files
                | Ok _ -> ());
               match target, body, metadata with
               | Some id, Ok body, Ok metadata ->
-                  notes := {
-                    Observation.Source.id;
-                    title = note.title.value;
-                    metadata;
-                    body;
+                  let span =
+                    Option.map
+                      (fun (input : _ Dsl_syntax.located) ->
+                        let range = input.range in
+                        { Provenance.file = range.file;
+                          start = range.start;
+                          stop = range.stop })
+                      note.metadata
+                  in
+                  notes := Provenance.located
+                    ~span:{ Provenance.file = declaration.range.file;
+                            start = declaration.range.start;
+                            stop = declaration.range.stop }
+                    { Observation.Source.id;
+                    title = Provenance.located
+                      ~span:{ Provenance.file = note.title.range.file;
+                              start = note.title.range.start;
+                              stop = note.title.range.stop }
+                      note.title.value;
+                    metadata = Provenance.located ?span metadata;
+                    body = Provenance.located
+                      ~span:{ Provenance.file = note.body.range.file;
+                              start = note.body.range.start;
+                              stop = note.body.range.stop }
+                      body;
                   } :: !notes
               | _ -> ()))
         files;
