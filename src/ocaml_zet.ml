@@ -5,6 +5,7 @@ module Dsl_function = Dsl_function
 module Dsl_metadata = Dsl_metadata
 module Dsl_parser = Dsl_parser
 module Dsl_syntax = Dsl_syntax
+module Frontend = Frontend
 module Graph = Graph
 module Observation = Observation
 module Policy = Policy
