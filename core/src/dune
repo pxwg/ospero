@@ -1,6 +1,5 @@
-(include_subdirs unqualified)
+(dirs :standard \ dsl)
 
 (library
  (name ocaml_zet)
- (modules_without_implementation dsl_syntax)
  (private_modules observation_edge_id))
