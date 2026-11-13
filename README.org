@@ -5,3 +5,7 @@ En el espejo de esta noche alcanzo mi insospechado rostro eterno.
 
 — Jorge Luis Borges, /Poema conjetural/
 #+end_quote
+
+- [[file:core/][ospero-core]]: An [[https://ocaml.org/][OCaml]] core for knowledge graphs.
+
+[[file:LICENSE][MIT]].

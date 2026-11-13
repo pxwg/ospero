@@ -1,0 +1,11 @@
+* ospero-core
+
+An [[https://ocaml.org/][OCaml]] core for knowledge graphs. API unstable.
+
+#+begin_src dune
+(libraries ospero-core)
+#+end_src
+
+Modules live under =Ospero_core=.
+
+[[file:../LICENSE][MIT]].
