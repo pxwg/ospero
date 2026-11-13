@@ -1,0 +1,26 @@
+opam-version: "2.0"
+version: "0.1.0"
+synopsis: "Knowledge graphs, observations and policy evaluation for Ospero"
+description: """
+An OCaml core library for assembling knowledge graphs, expanding frontend
+actions with source provenance, and evaluating policies over fixed graph
+topologies. The API is unstable and may change in subsequent releases.
+"""
+maintainer: "Xinyu Xiang <xiangxy23@mails.tsinghua.edu.cn>"
+authors: "Xinyu Xiang"
+license: "MIT"
+homepage: "https://github.com/pxwg/ospero"
+bug-reports: "https://github.com/pxwg/ospero/issues"
+dev-repo: "git+https://github.com/pxwg/ospero.git"
+depends: [
+  "ocaml" {>= "4.13"}
+  "dune" {>= "3.0"}
+]
+build: [
+  ["dune" "build" "--root" "core" "--only-packages" name "--profile" "release" "-j" jobs "@install"]
+]
+install: [
+  ["dune" "install" "--root" "core" "--prefix" prefix "--libdir" lib name]
+  ["mkdir" "-p" "%{doc}%/ospero-core"]
+  ["cp" "LICENSE" "%{doc}%/ospero-core/LICENSE"]
+]
