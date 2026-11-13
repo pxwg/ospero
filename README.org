@@ -1,0 +1,7 @@
+* Ospero
+
+#+begin_quote
+En el espejo de esta noche alcanzo mi insospechado rostro eterno.
+
+— Jorge Luis Borges, /Poema conjetural/
+#+end_quote
