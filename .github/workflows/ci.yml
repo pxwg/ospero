@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: ${{ matrix.os }} / OCaml ${{ matrix.ocaml }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            ocaml: 4.13.1
+            dune: dune.3.5.0
+          - os: macos-latest
+            ocaml: 5.5.1
+            dune: dune
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.ocaml }}
+      - name: Install package
+        run: |
+          opam lint ospero-core.opam
+          opam install ${{ matrix.dune }} --yes
+          opam install . --yes
+      - name: Check installed library
+        shell: bash
+        run: |
+          consumer_dir=$(mktemp -d)
+          trap 'rm -rf "$consumer_dir"' EXIT
+          echo '(lang dune 3.5)' > "$consumer_dir/dune-project"
+          echo '(executable (name main) (libraries ospero-core))' > "$consumer_dir/dune"
+          echo 'let () = match Ospero_core.Graph.Vertex_id.of_string "ospero" with Ok _ -> () | Error e -> failwith e' > "$consumer_dir/main.ml"
+          opam exec -- dune exec --root "$consumer_dir" ./main.exe
+          cmp LICENSE "$(opam var doc)/ospero-core/LICENSE"
