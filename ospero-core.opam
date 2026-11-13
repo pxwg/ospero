@@ -13,8 +13,8 @@ homepage: "https://github.com/pxwg/ospero"
 bug-reports: "https://github.com/pxwg/ospero/issues"
 dev-repo: "git+https://github.com/pxwg/ospero.git"
 depends: [
-  "ocaml" {>= "4.13"}
-  "dune" {>= "3.0"}
+  "ocaml" {>= "4.13.1"}
+  "dune" {>= "3.5"}
 ]
 build: [
   ["dune" "build" "--root" "core" "--only-packages" name "--profile" "release" "-j" jobs "@install"]
