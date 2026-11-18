@@ -24,6 +24,13 @@ module Payload : sig
     name : string Provenance.located;
     value : t;
   }
+
+  (** The constructor of a value, without its contents. *)
+  module Kind : sig
+    type t = String | Bool | Int | List | Record | Contents
+
+    val of_value : value -> t
+  end
 end
 
 (** An undecoded action call in a note body.
@@ -39,12 +46,30 @@ end
 (** A problem reported while extracting or decoding input.
     [None] means no direct source location is known. *)
 module Diagnostic : sig
+  (** A step from the decoded value towards the offending occurrence. *)
+  type segment =
+    | Field of string
+    | Index of int
+
+  type problem =
+    | Type_mismatch of { expected : Payload.Kind.t; given : Payload.Kind.t }
+    | Missing_field of string
+        (** Reported at the enclosing record. *)
+    | Unknown_field of { name : string; known : string list }
+    | Duplicate_field of string
+    | Invalid_choice of { given : string; choices : string list }
+    | Unknown_action of { name : string; known : string list }
+    | Invalid of string
+        (** A project-defined constraint rejected a well-formed value. *)
+
   type t = {
-    message : string;
+    problem : problem;
+    path : segment list;
+        (** Outermost first; empty at the decoded value itself. *)
     span : Provenance.span option;
   }
 
-  val make : ?span:Provenance.span -> string -> t
+  val make : ?path:segment list -> ?span:Provenance.span -> problem -> t
 end
 
 (** Project-supplied rules for the values occurring in the current layer. *)

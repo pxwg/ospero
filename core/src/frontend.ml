@@ -13,6 +13,24 @@ module Payload = struct
     name : string Provenance.located;
     value : t;
   }
+
+  module Kind_type = struct
+    type t = String | Bool | Int | List | Record | Contents
+  end
+
+  let kind_of : value -> Kind_type.t = function
+    | String _ -> Kind_type.String
+    | Bool _ -> Kind_type.Bool
+    | Int _ -> Kind_type.Int
+    | List _ -> Kind_type.List
+    | Record _ -> Kind_type.Record
+    | Contents _ -> Kind_type.Contents
+
+  module Kind = struct
+    include Kind_type
+
+    let of_value = kind_of
+  end
 end
 
 module Invocation = struct
@@ -23,12 +41,26 @@ module Invocation = struct
 end
 
 module Diagnostic = struct
+  type segment =
+    | Field of string
+    | Index of int
+
+  type problem =
+    | Type_mismatch of { expected : Payload.Kind.t; given : Payload.Kind.t }
+    | Missing_field of string
+    | Unknown_field of { name : string; known : string list }
+    | Duplicate_field of string
+    | Invalid_choice of { given : string; choices : string list }
+    | Unknown_action of { name : string; known : string list }
+    | Invalid of string
+
   type t = {
-    message : string;
+    problem : problem;
+    path : segment list;
     span : Provenance.span option;
   }
 
-  let make ?span message = { message; span }
+  let make ?(path = []) ?span problem = { problem; path; span }
 end
 
 module type DECODING = sig
