@@ -1,11 +1,11 @@
 module Source = struct
   type 'action content =
-    | Text of string
+    | Text of Text.t
     | Action of 'action
 
   type ('metadata, 'action) note = {
     id : Graph.Vertex_id.t;
-    title : string Provenance.located;
+    title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
     body : 'action content Provenance.located list Provenance.located;
   }
@@ -25,13 +25,13 @@ type generation = {
 
 module Observed = struct
   type 'metadata note = {
-    title : string Provenance.located;
+    title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
     generated_from : generation option;
   }
 
   type 'consumption content =
-    | Text of string
+    | Text of Text.t
     | Consume of 'consumption
 end
 

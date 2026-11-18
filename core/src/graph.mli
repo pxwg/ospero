@@ -47,7 +47,7 @@ type ('note, 'relation) t
 
 (** A note payload, excluding identity, body, and provenance. *)
 type 'metadata note = {
-  title : string;
+  title : Text.t;
   metadata : 'metadata;
 }
 

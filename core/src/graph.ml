@@ -54,7 +54,7 @@ type ('note, 'relation) t = {
 }
 
 type 'metadata note = {
-  title : string;
+  title : Text.t;
   metadata : 'metadata;
 }
 

@@ -6,3 +6,4 @@ module Observation = Observation
 module Policy = Policy
 module Policy_wiring = Policy_wiring
 module Provenance = Provenance
+module Text = Text

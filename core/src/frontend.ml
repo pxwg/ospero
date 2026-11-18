@@ -1,9 +1,4 @@
 module Payload = struct
-  type contents = {
-    language : string;
-    text : string;
-  }
-
   type t = value Provenance.located
 
   and value =
@@ -12,7 +7,7 @@ module Payload = struct
     | Int of int
     | List of t list
     | Record of field list
-    | Contents of contents
+    | Contents of Text.t
 
   and field = {
     name : string Provenance.located;

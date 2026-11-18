@@ -1,7 +1,7 @@
 (** Input objects, before observation expands actions. *)
 module Source : sig
   type 'action content =
-    | Text of string
+    | Text of Text.t
     | Action of 'action
 
   (** Constructing a note does not register its identity.
@@ -11,7 +11,7 @@ module Source : sig
       container, including an explicitly empty body. *)
   type ('metadata, 'action) note = {
     id : Graph.Vertex_id.t;
-    title : string Provenance.located;
+    title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
         (** The optional span covers the original metadata as a whole,
             independently of the project-defined decoded value.
@@ -39,7 +39,7 @@ module Observed : sig
   (** Note fields retain direct source locations until assembly separates
       semantic values from the observation's source registry. *)
   type 'metadata note = {
-    title : string Provenance.located;
+    title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
     generated_from : generation option;
   }
@@ -48,7 +48,7 @@ module Observed : sig
       Consumption declarations are interpreted by consumers; they do not
       contribute further definitions or graph edges. *)
   type 'consumption content =
-    | Text of string
+    | Text of Text.t
     | Consume of 'consumption
 end
 

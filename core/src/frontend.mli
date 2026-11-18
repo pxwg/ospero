@@ -5,11 +5,6 @@
 (** Undecoded field values shared by metadata and invocation arguments.
     Decoding assigns them project-defined meaning. *)
 module Payload : sig
-  type contents = {
-    language : string;
-    text : string;
-  }
-
   (** A value occurrence. [None] means no direct source location is known. *)
   type t = value Provenance.located
 
@@ -20,7 +15,7 @@ module Payload : sig
     | List of t list
     | Record of field list
         (** Fields keep their source order, including duplicate names. *)
-    | Contents of contents
+    | Contents of Text.t
         (** Content kept for later processing, such as rich-text fields or
             nested note bodies. The text is the fixed snapshot taken by the
             current scan; the enclosing occurrence locates it in the source. *)
