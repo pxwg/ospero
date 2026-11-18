@@ -35,14 +35,6 @@ module Observed = struct
     | Consume of 'consumption
 end
 
-type 'metadata context = {
-  current : Graph.Vertex_id.t;
-  is_registered : Graph.Vertex_id.t -> bool;
-  lookup :
-    Graph.Vertex_id.t ->
-    'metadata Graph.note Graph.vertex option;
-}
-
 type ('metadata, 'relation, 'action, 'consumption) contribution =
   | Define of ('metadata, 'action) Source.note Provenance.located
   | Relate of {
@@ -52,7 +44,6 @@ type ('metadata, 'relation, 'action, 'consumption) contribution =
   | Emit of 'consumption Observed.content
 
 type ('metadata, 'relation, 'action, 'consumption, 'error) interpreter =
-  'metadata context ->
   'action ->
   (('metadata, 'relation, 'action, 'consumption) contribution list,
    'error list) result
@@ -102,10 +93,6 @@ let metadata_source result id = Vertex_map.find_opt id result.metadata_sources
 let title_source result id = Vertex_map.find_opt id result.title_sources
 let note_source result id = Vertex_map.find_opt id result.note_sources
 
-let vertex_of_note (note : (_, _) Source.note) =
-  { Graph.id = note.id;
-    note = { Graph.title = note.title.value; metadata = note.metadata.value } }
-
 let expand ~interpret project =
   let identities = Vertex_set.of_list project.identities in
   let is_registered id = Vertex_set.mem id identities in
@@ -126,14 +113,6 @@ let expand ~interpret project =
   match List.rev !issues with
   | _ :: _ as errors -> Error errors
   | [] ->
-      let snapshot =
-        List.fold_left
-          (fun index (note : _ Provenance.located) ->
-            let vertex = vertex_of_note note.value in
-            Vertex_map.add vertex.id vertex index)
-          Vertex_map.empty project.notes
-      in
-      let lookup id = Vertex_map.find_opt id snapshot in
       let vertices = ref [] in
       let edges = ref [] in
       let bodies = ref [] in
@@ -143,7 +122,6 @@ let expand ~interpret project =
       while not (Queue.is_empty pending) do
         let located, generated_from = Queue.take pending in
         let note = located.value in
-        let context = { current = note.id; is_registered; lookup } in
         let contents = ref [] in
         let edge_index = ref 0 in
         let emit span content =
@@ -173,7 +151,7 @@ let expand ~interpret project =
             match content.value with
             | Source.Text text -> emit content.span (Observed.Text text)
             | Source.Action action ->
-                match interpret context action with
+                match interpret action with
                 | Ok contributions ->
                     List.iter (contribute content.span) contributions
                 | Error errors ->

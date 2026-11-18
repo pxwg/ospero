@@ -52,20 +52,6 @@ module Observed : sig
     | Consume of 'consumption
 end
 
-(** Read-only context supplied by the core when interpreting an action. *)
-type 'metadata context = {
-  current : Graph.Vertex_id.t;
-  is_registered : Graph.Vertex_id.t -> bool;
-      (** Membership in the frozen identity space. *)
-  lookup :
-    Graph.Vertex_id.t ->
-    'metadata Graph.note Graph.vertex option;
-      (** Query the frozen snapshot of initial explicit definitions.
-          Returns identity, title and metadata.
-          Generated definitions do not update this snapshot.
-          A registered identity may still return [None]. *)
-}
-
 (** Ordered contributions returned by an action interpreter. *)
 type ('metadata, 'relation, 'action, 'consumption) contribution =
   | Define of ('metadata, 'action) Source.note Provenance.located
@@ -83,9 +69,10 @@ type ('metadata, 'relation, 'action, 'consumption) contribution =
   | Emit of 'consumption Observed.content
       (** Append action-free content to the current note's observed body. *)
 
-(** Interpret an action into ordered contributions or project-defined errors. *)
+(** Interpret an action into ordered contributions or project-defined errors.
+    The action carries its explicit inputs; the core supplies no context.
+    Contributions belong to the note whose body contains the action. *)
 type ('metadata, 'relation, 'action, 'consumption, 'error) interpreter =
-  'metadata context ->
   'action ->
   (('metadata, 'relation, 'action, 'consumption) contribution list,
    'error list) result
@@ -113,8 +100,8 @@ type 'error issue =
   | Duplicate_body of Graph.Vertex_id.t
   | Unknown_body_vertex of Graph.Vertex_id.t
 
-(** Freeze registered identities and the initial explicit-definition snapshot,
-    then expand note bodies using the interpreter.
+(** Freeze registered identities, then expand note bodies using the
+    interpreter.
     Edge IDs use the source identity and its zero-based Relate occurrence index.
     Endpoint existence is checked during assembly.
     Plain text retains its source span. Each Relate and Emit contribution
