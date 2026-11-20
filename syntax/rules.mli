@@ -35,6 +35,15 @@ module Payload_rules : sig
     'node t ->
     'node t
 
+  (** Register a reading for lists of any item type: split the node into
+      element nodes, each read with the item descriptor. Element diagnostics
+      carry their index. Raises [Invalid_argument] if the name is taken. *)
+  val register_items :
+    name:string ->
+    ('node Provenance.located -> 'node Provenance.located list Provenance.located matched) ->
+    'node t ->
+    'node t
+
   (** A rule can reuse the reader to extract values from child nodes. *)
   val read : 'node reader -> 'a Syntax.Args.value -> 'node Provenance.located ->
     'a Provenance.located matched

@@ -38,6 +38,9 @@ module Payload_rules = struct
     | Rule : 'a Args.value *
         ('node Provenance.located -> 'node reader -> 'a Provenance.located matched) ->
         'node rule
+    | Items :
+        ('node Provenance.located -> 'node Provenance.located list Provenance.located matched) ->
+        'node rule
 
   type 'node t = (string * 'node rule) list
 
@@ -45,15 +48,46 @@ module Payload_rules = struct
 
   let register ~name ~value run = add_rule "Payload_rules" ~name (Rule (value, run))
   let replace ~name ~value run = replace_rule "Payload_rules" ~name (Rule (value, run))
+  let register_items ~name split = add_rule "Payload_rules" ~name (Items split)
+
+  (* Every element is read; diagnostics from all elements are kept. *)
+  let read_items : type node b.
+      node reader -> b Args.value -> node Provenance.located list Provenance.located ->
+      b Provenance.located list Provenance.located matched =
+    fun reader item elements ->
+      let read_element index element =
+        let at = [ Diagnostic.Index index ] in
+        match reader.read item element with
+        | Matched value -> Ok value
+        | No_match ->
+            Error [ Diagnostic.make ?span:element.Provenance.span ~path:at
+              (Invalid "no Payload rule matched this list element") ]
+        | Invalid errors ->
+            Error (List.map (fun (error : Diagnostic.t) ->
+              { error with path = at @ error.path }) errors)
+      in
+      let results = List.mapi read_element elements.value in
+      match List.concat_map (function Error e -> e | Ok _ -> []) results with
+      | [] -> Matched { elements with value = List.filter_map Result.to_option results }
+      | errors -> Invalid errors
 
   (* Skip rules for other value types before calling their matchers. *)
   let run_rule : type node a.
       node reader -> a Args.value -> node Provenance.located -> node rule ->
       a Provenance.located matched =
-    fun reader expected node (Rule (actual, run)) ->
-      match Args.equal expected actual with
-      | Some Equal -> run node reader
-      | None -> No_match
+    fun reader expected node -> function
+      | Rule (actual, run) ->
+          (match Args.equal expected actual with
+           | Some Equal -> run node reader
+           | None -> No_match)
+      | Items split ->
+          match Args.items expected with
+          | None -> No_match
+          | Some (Args.Items item) ->
+              match split node with
+              | No_match -> No_match
+              | Invalid errors -> Invalid errors
+              | Matched elements -> read_items reader item elements
 
   let reader rules =
     let rec reader = { read = (fun expected node ->
