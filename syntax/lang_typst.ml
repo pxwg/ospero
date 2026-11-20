@@ -41,7 +41,10 @@ let identities =
        match h.value.metadata, h.value.label with
        | None, _ -> Rules.No_match
        | Some _, None ->
-           Rules.Invalid [ Card.invalid ?span:h.span "a card heading needs a trailing <label>" ]
+           let insertion = Option.map (fun (s : Provenance.span) -> { s with start = s.stop })
+             h.value.title.span in
+           Rules.Invalid [ Frontend.Diagnostic.make ?span:h.span
+             (Missing_identity { insertion; prefix = " <"; suffix = ">" }) ]
        | Some _, Some label ->
            match Graph.Vertex_id.of_string label.value with
            | Ok id -> Rules.Matched { label with value = id }

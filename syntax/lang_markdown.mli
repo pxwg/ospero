@@ -13,6 +13,8 @@ type value = Value.t
 type metadata = {
   fields : Value.field list;
   diagnostics : Frontend.Diagnostic.t list;
+  insertion : Provenance.span;
+      (** The empty span opening the TOML entries, where a field can be added. *)
 }
 
 (** The identity rules read this at each heading. [metadata] is [None]

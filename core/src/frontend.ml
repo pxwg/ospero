@@ -53,6 +53,7 @@ module Diagnostic = struct
     | Invalid_choice of { given : string; choices : string list }
     | Unknown_action of { name : string; known : string list }
     | Invalid of string
+    | Missing_identity of { insertion : Provenance.span option; prefix : string; suffix : string }
 
   type t = {
     problem : problem;

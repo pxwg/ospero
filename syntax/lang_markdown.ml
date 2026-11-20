@@ -9,6 +9,7 @@ type value = Value.t
 type metadata = {
   fields : Value.field list;
   diagnostics : Frontend.Diagnostic.t list;
+  insertion : Provenance.span;
 }
 
 type heading = {
@@ -35,7 +36,7 @@ let identities =
   |> Identity_rules.register ~name:"meta-id" (fun (h : heading Provenance.located) ->
        match h.value.metadata with
        | None -> Rules.No_match
-       | Some { fields; diagnostics } ->
+       | Some { fields; diagnostics; insertion } ->
            match List.find_opt (fun ((k : string Provenance.located), _) -> k.value = "id") fields with
            | Some (_, { value = String s; span }) ->
                (match Graph.Vertex_id.of_string s with
@@ -45,7 +46,9 @@ let identities =
                Rules.Invalid (Card.invalid ?span:v.span "id must be a quoted string" :: diagnostics)
            | None ->
                match diagnostics with
-               | [] -> Rules.Invalid [ Card.invalid ?span:h.span "zk-meta needs an id" ]
+               | [] ->
+                   Rules.Invalid [ Frontend.Diagnostic.make ?span:h.span
+                     (Missing_identity { insertion = Some insertion; prefix = "id = \""; suffix = "\"\n" }) ]
                | _ -> Rules.Invalid diagnostics)
 
 (* {1 Scanning} *)
@@ -170,7 +173,7 @@ let rec region ~file ~headings text start stop =
           let inner = next_line text m in
           let close, after = fence_close text (c, n) inner stop in
           let fields, diagnostics = Toml.parse_prefix ~file text ~start:inner ~stop:close in
-          Some { fields; diagnostics }, Some (span file m (min stop (max close (line_end text close)))), after
+          Some { fields; diagnostics; insertion = span file inner inner }, Some (span file m (min stop (max close (line_end text close)))), after
       | _ -> None, None, next_line text pos
     in
     let title = at file text !t0 !t1 in
@@ -180,7 +183,7 @@ let rec region ~file ~headings text start stop =
         title = Option.get title.span;
         metadata = (match metadata with
           | None -> Ok []
-          | Some { fields; diagnostics = [] } -> Ok (Value.fields fields)
+          | Some { fields; diagnostics = []; _ } -> Ok (Value.fields fields)
           | Some { diagnostics; _ } -> Error diagnostics);
         metadata_span; start = pos; body_start }
       :: !heads;
