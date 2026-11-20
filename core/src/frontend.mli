@@ -114,8 +114,8 @@ module Decode (Rules : DECODING) :
      and type action = Rules.action
 
 (** A complete frontend: decoding plus an independent interpreter.
-    An interpreter handling Contents may reuse a Syntax adapter and its
-    decoder to obtain the next typed Source layer. *)
+    An interpreter handling Contents obtains the next typed Source layer with
+    [Syntax.parse_contents] followed by [decode_source]. *)
 module type FRONTEND = sig
   include DECODER
 

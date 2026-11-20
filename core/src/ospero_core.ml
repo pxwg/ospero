@@ -8,3 +8,4 @@ module Policy_wiring = Policy_wiring
 module Provenance = Provenance
 module Schema = Schema
 module Text = Text
+module Syntax = Syntax

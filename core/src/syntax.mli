@@ -1,0 +1,160 @@
+(** The Syntax contract: how language adapters hand the current layer to the
+    core, and how each action declares its arguments once for both Syntax and
+    Frontend. Rule tables for writing adapters are in [Ospero.Syntax]. *)
+open Frontend
+
+module Args : sig
+  (** The descriptor of a value expected at a parameter or metadata field.
+      For example, a rule registered for [string] must return a string. *)
+  type 'a value
+
+  val string : string value
+  val bool : bool value
+  val int : int value
+  val contents : Text.t value
+  val list : 'a value -> 'a Provenance.located list value
+  val record : Payload.field list value
+
+  (** A closed vocabulary of [values], written as [spell value]. Decoding
+      accepts exactly these spellings; values themselves are never compared.
+      Raises [Invalid_argument] when two values share a spelling. *)
+  val choice : spell:('a -> string) -> 'a list -> 'a value
+
+  (** A value checked when decoding; [encode] writes it back. *)
+  val refine :
+    ('a -> ('b, string) result) -> encode:('b -> 'a) -> 'a value -> 'b value
+
+  (** Convert the extracted value to Payload without changing its location. *)
+  val encode : 'a value -> 'a Provenance.located -> Payload.t
+
+  (** A descriptor whose value type is hidden. *)
+  type packed = Value : 'a value -> packed
+
+  (** The descriptor of the payload that carries a value. Choices and
+      refinements are carried by the value they refine. *)
+  val carrier : 'a value -> packed
+
+  (** The carrier able to hold a value of this shape. *)
+  val of_shape : Schema.shape -> packed
+
+  type (_, _) equality = Equal : ('a, 'a) equality
+
+  (** Equal carriers prove equal value types. Refined values never compare
+      equal; compare their carriers instead. *)
+  val equal : 'a value -> 'b value -> ('a, 'b) equality option
+
+  (** Declare record fields once for both reading and writing typed arguments.
+      Getters preserve the source positions supplied by a syntax rule. *)
+  type ('args, 'a) fields
+  type 'args t
+
+  val empty : ('args, unit) fields
+
+  val required :
+    string -> 'a value -> get:('args -> 'a Provenance.located) ->
+    ('args, 'a Provenance.located) fields
+
+  val optional :
+    string -> 'a value -> get:('args -> 'a Provenance.located option) ->
+    ('args, 'a Provenance.located option) fields
+
+  val ( let+ ) : ('args, 'a) fields -> ('a -> 'b) -> ('args, 'b) fields
+  val ( and+ ) : ('args, 'a) fields -> ('args, 'b) fields -> ('args, 'a * 'b) fields
+  val spec : ('args, 'args) fields -> 'args t
+end
+
+module Action : sig
+  (** A named input declaration shared by the frontend and syntax rules. *)
+  type 'args t
+  type packed = Pack : 'args t -> packed
+
+  val declare : name:string -> 'args Args.t -> 'args t
+  val name : 'args t -> string
+  val describe : 'args t -> Schema.shape
+
+  (** Parameter names and their declared descriptors, in declaration order. *)
+  val parameters : 'args t -> (string * Args.packed) list
+
+  (** Write typed arguments as an undecoded call, named at [span]. *)
+  val invocation : ?span:Provenance.span -> 'args t -> 'args -> Invocation.t
+end
+
+module Frontend_input : sig
+  (** A single table supplies both Syntax lookup and Frontend decoding. *)
+  type ('metadata, 'action) t
+
+  (** An action declaration with the decoder constructing a project action. *)
+  type 'action entry
+
+  val action :
+    'args Action.t -> decode:('args -> ('action, Diagnostic.t list) result) ->
+    'action entry
+
+  (** The metadata schema and the action table. Raises [Invalid_argument]
+      when two entries share a name. *)
+  val create : metadata:'metadata Schema.t -> 'action entry list -> ('metadata, 'action) t
+
+  (** Add an action. Raises [Invalid_argument] if its name is taken. *)
+  val add : 'action entry -> ('metadata, 'action) t -> ('metadata, 'action) t
+
+  (** Override an action of the same name. Raises [Invalid_argument] if
+      there is none, so a misspelled override cannot pass silently. *)
+  val replace : 'action entry -> ('metadata, 'action) t -> ('metadata, 'action) t
+
+  val find_action : ('metadata, 'action) t -> string -> Action.packed option
+  val action_names : ('metadata, 'action) t -> string list
+  val metadata_shape : ('metadata, 'action) t -> Schema.shape
+
+  (** Use these two functions to implement [Frontend.DECODING]. *)
+  val decode_metadata :
+    ('metadata, 'action) t -> Payload.t -> ('metadata, Diagnostic.t list) result
+
+  val decode_action :
+    ('metadata, 'action) t -> Invocation.t -> ('action, Diagnostic.t list) result
+end
+
+(** A source document in the adapter's own representation, such as an
+    already parsed and cached tree. *)
+type 'native document = {
+  file : string;
+  language : Text.Language.t;
+  native : 'native;
+}
+
+type raw_note = (Payload.value, Invocation.t) Observation.Source.note
+
+(** The initial notes of a document and the identities of declarations that
+    become notes only during expansion. Root IDs come from the notes. *)
+type extracted = {
+  notes : raw_note Provenance.located list;
+  declared : Graph.Vertex_id.t Provenance.located list;
+}
+
+(** An adapter reads one source language at both entry points of the data
+    flow: whole documents, and Contents retained by an action. *)
+type 'native adapter = {
+  language : Text.Language.t;
+  extract : 'native document -> (extracted, Diagnostic.t list) result;
+  contents :
+    Text.t Provenance.located -> (raw_note Provenance.located, Diagnostic.t list) result;
+      (** The note defined by these Contents, as its current layer. *)
+}
+
+type 'native config
+
+(** One adapter per language. Raises [Invalid_argument] when two adapters
+    share a language. *)
+val configure : 'native adapter list -> 'native config
+
+(** Extract the batch before any frontend decoding. Keep note order and
+    collect diagnostics across documents. *)
+val parse_project :
+  'native config -> 'native document list ->
+  ((Payload.value, Invocation.t) Observation.project, Diagnostic.t list) result
+
+(** The next layer inside Contents, read by the adapter for their language.
+    An interpreter decodes it with [Frontend.DECODER.decode_source]; the
+    identities were frozen with the project and none are added here. *)
+val parse_contents :
+  'native config -> Text.t Provenance.located ->
+  (raw_note Provenance.located, Diagnostic.t list) result
