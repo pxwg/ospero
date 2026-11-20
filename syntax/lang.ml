@@ -7,3 +7,6 @@ module Markdown = struct end
 
 (** The literal values shared by Typst and Markdown. *)
 module Value = Value
+
+(** The card layer the adapters share, for adapters over other parsers. *)
+module Card = Card
