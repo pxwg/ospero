@@ -15,8 +15,8 @@ depends: [
   "dune" {>= "3.5"}
 ]
 build: [
-  ["dune" "build" "--only-packages" name "--profile" "release" "-j" jobs "@install"]
+  ["dune" "build" "--root" "." "--only-packages" name "--profile" "release" "-j" jobs "@install"]
 ]
 install: [
-  ["dune" "install" "--prefix" prefix "--libdir" lib name]
+  ["dune" "install" "--root" "." "--prefix" prefix "--libdir" lib name]
 ]
