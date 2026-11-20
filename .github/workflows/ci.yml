@@ -18,8 +18,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            ocaml: 4.13.1
-            dune: dune.3.5.0
+            ocaml: 5.5.1
+            dune: dune.3.24.2
           - os: macos-latest
             ocaml: 5.5.1
             dune: dune
