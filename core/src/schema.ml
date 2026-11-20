@@ -104,6 +104,11 @@ let choice choices =
                 (Diagnostic.Invalid_choice { given; choices = names }))
       | _ -> mismatch Payload.Kind.String v) }
 
+(* Retain the span without changing the description seen by Syntax. *)
+let located schema =
+  { schema with run = (fun input ->
+      Result.map (fun value -> { input with Provenance.value }) (schema.run input)) }
+
 let map f schema =
   { schema with run = (fun v -> Result.map f (schema.run v)) }
 
@@ -136,6 +141,8 @@ let optional name schema ~default =
 
 let option name schema =
   field name false schema ~present:Option.some ~absent:(fun _ -> Ok None)
+
+let no_fields = { declared = []; read = (fun _ _ -> Ok ()) }
 
 let ( let+ ) fields f =
   { fields with read = (fun span given -> Result.map f (fields.read span given)) }
@@ -170,6 +177,14 @@ let record fields =
            | errors, Ok _ -> Error errors
            | errors, Error more -> Error (errors @ more))
       | _ -> mismatch Payload.Kind.Record v) }
+
+(* Let callers keep the fields and their source positions for further decoding. *)
+let record_payload =
+  { description = Record [];
+    run = (fun payload ->
+      match payload.value with
+      | Payload.Record fields -> Ok fields
+      | _ -> mismatch Payload.Kind.Record payload) }
 
 let actions schemas (invocation : Invocation.t) =
   match List.assoc_opt invocation.name.value schemas with

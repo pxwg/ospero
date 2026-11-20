@@ -41,6 +41,9 @@ val list : 'a t -> 'a list t
 (** Decode a string by exact spelling. *)
 val choice : (string * 'a) list -> 'a t
 
+(** Keep the source span alongside the decoded value. *)
+val located : 'a t -> 'a Provenance.located t
+
 val map : ('a -> 'b) -> 'a t -> 'b t
 
 (** Reject a decoded value with [Invalid], located at the value's occurrence. *)
@@ -51,11 +54,18 @@ val required : string -> 'a t -> 'a fields
 
 val optional : string -> 'a t -> default:'a -> 'a fields
 val option : string -> 'a t -> 'a option fields
+
+(** A record with no declared fields. *)
+val no_fields : unit fields
+
 val ( let+ ) : 'a fields -> ('a -> 'b) -> 'b fields
 val ( and+ ) : 'a fields -> 'b fields -> ('a * 'b) fields
 
 (** The declared fields are the only ones accepted. *)
 val record : 'a fields -> 'a t
+
+(** Read raw record fields. The caller supplies their field validation. *)
+val record_payload : Payload.field list t
 
 (** Select a schema by invocation name and decode the arguments as a record
     located at the name. Usable directly as [DECODING.decode_action]. *)
