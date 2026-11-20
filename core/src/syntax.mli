@@ -27,6 +27,12 @@ module Args : sig
   (** Convert the extracted value to Payload without changing its location. *)
   val encode : 'a value -> 'a Provenance.located -> Payload.t
 
+  (** The item descriptor of a list descriptor, which refines the value type.
+      Rules that read a list of any item type use it. *)
+  type _ items = Items : 'b value -> 'b Provenance.located list items
+
+  val items : 'a value -> 'a items option
+
   (** A descriptor whose value type is hidden. *)
   type packed = Value : 'a value -> packed
 

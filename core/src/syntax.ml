@@ -57,6 +57,13 @@ module Args = struct
       | Map refined ->
           encode refined.carrier { occurrence with value = refined.encode occurrence.value }
 
+  type _ items = Items : 'b value -> 'b Provenance.located list items
+
+  (* A refined list is read as its carrier first, so only plain lists match. *)
+  let items : type a. a value -> a items option = function
+    | List item -> Some (Items item)
+    | _ -> None
+
   type packed = Value : 'a value -> packed
 
   let rec carrier : type a. a value -> packed = function
