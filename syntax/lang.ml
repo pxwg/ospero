@@ -3,7 +3,7 @@
     project actions through the rule tables. *)
 module Typst = Lang_typst
 module Org = Lang_org
-module Markdown = struct end
+module Markdown = Lang_markdown
 
 (** The literal values shared by Typst and Markdown. *)
 module Value = Value
