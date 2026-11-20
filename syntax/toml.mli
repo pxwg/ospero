@@ -7,6 +7,12 @@
     reported as unsupported. *)
 open Ospero_kernel
 
+(** Return the complete entries before the first syntax error, with its
+    diagnostic if present. A field is complete only after its line ends. *)
+val parse_prefix :
+  file:string -> string -> start:int -> stop:int ->
+  Value.field list * Frontend.Diagnostic.t list
+
 val parse :
   file:string -> string -> start:int -> stop:int ->
   (Value.field list, Frontend.Diagnostic.t list) result

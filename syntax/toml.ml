@@ -236,9 +236,13 @@ let document st =
         entries := { entry with path = !table @ entry.path } :: !entries;
         go ()
   in
-  go ();
-  group (List.rev !entries)
+  let diagnostics = try go (); [] with Error diagnostic -> [ diagnostic ] in
+  group (List.rev !entries), diagnostics
+
+let parse_prefix ~file text ~start ~stop =
+  document { file; text; stop; pos = start }
 
 let parse ~file text ~start ~stop =
-  let st = { file; text; stop; pos = start } in
-  try Ok (document st) with Error diagnostic -> Error [ diagnostic ]
+  match parse_prefix ~file text ~start ~stop with
+  | fields, [] -> Ok fields
+  | _, diagnostics -> Error diagnostics
