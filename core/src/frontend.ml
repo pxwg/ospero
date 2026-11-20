@@ -61,6 +61,11 @@ module Diagnostic = struct
   }
 
   let make ?(path = []) ?span problem = { problem; path; span }
+
+  let with_fallback_span span diagnostic =
+    match diagnostic.span, span with
+    | None, Some _ -> { diagnostic with span }
+    | _ -> diagnostic
 end
 
 module type DECODING = sig
@@ -74,33 +79,34 @@ module type DECODING = sig
     Invocation.t -> (action, Diagnostic.t list) result
 end
 
+type 'a read = ('a, Diagnostic.t list) result
+type raw_note = (Payload.value read, Invocation.t read) Observation.Source.note
+type raw_project = (Payload.value read, Invocation.t read) Observation.project
+
+type 'a decoded = ('a, Diagnostic.t list) result
+
+type action_failure =
+  | Unread of Diagnostic.t list
+  | Undecoded of Invocation.t * Diagnostic.t list
+
+type 'a decoded_action = ('a, action_failure) result
+
+type 'error failure =
+  | Metadata_decode of Diagnostic.t list
+  | Action_decode of action_failure
+  | Interpretation of 'error
+
 module type DECODER = sig
   type metadata
   type action
 
   val decode_source :
-    (Payload.value, Invocation.t) Observation.Source.note Provenance.located ->
-    ((metadata, action) Observation.Source.note Provenance.located,
-     Diagnostic.t list) result
+    raw_note Provenance.located ->
+    (metadata decoded, action decoded_action) Observation.Source.note Provenance.located
 
   val decode_project :
-    (Payload.value, Invocation.t) Observation.project ->
-    ((metadata, action) Observation.project, Diagnostic.t list) result
+    raw_project -> (metadata decoded, action decoded_action) Observation.project
 end
-
-(* Map in order, collecting every failure instead of stopping at the first. *)
-let collect f items =
-  let values, errors =
-    List.fold_left
-      (fun (values, errors) item ->
-        match f item with
-        | Ok value -> (value :: values, errors)
-        | Error found -> (values, List.rev_append found errors))
-      ([], []) items
-  in
-  match errors with
-  | [] -> Ok (List.rev values)
-  | _ :: _ -> Error (List.rev errors)
 
 module Decode (Rules : DECODING) = struct
   type metadata = Rules.metadata
@@ -109,30 +115,37 @@ module Decode (Rules : DECODING) = struct
   let decode_content (content : _ Provenance.located) =
     match content.value with
     | Observation.Source.Text text ->
-        Ok { content with value = Observation.Source.Text text }
-    | Observation.Source.Action invocation ->
-        Result.map
-          (fun action -> { content with value = Observation.Source.Action action })
-          (Rules.decode_action invocation)
+        { content with value = Observation.Source.Text text }
+    | Observation.Source.Action read ->
+        let locate = List.map (Diagnostic.with_fallback_span content.span) in
+        let decoded = match read with
+          | Error diagnostics -> Error (Unread (locate diagnostics))
+          | Ok invocation ->
+              Rules.decode_action invocation
+              |> Result.map_error (fun diagnostics -> Undecoded (invocation, locate diagnostics))
+        in
+        { content with value = Observation.Source.Action decoded }
 
   let decode_source (located : _ Observation.Source.note Provenance.located) =
     let note = located.value in
-    let metadata = Rules.decode_metadata note.metadata in
-    let body = collect decode_content note.body.value in
-    match metadata, body with
-    | Ok metadata, Ok body ->
-        Ok { located with value =
-          { Observation.Source.id = note.id;
-            title = note.title;
-            metadata = { note.metadata with value = metadata };
-            body = { note.body with value = body } } }
-    | Error metadata, Error body -> Error (metadata @ body)
-    | Error errors, Ok _ | Ok _, Error errors -> Error errors
+    let metadata_span =
+      match note.metadata.span with
+      | Some _ as span -> span
+      | None -> note.title.span
+    in
+    let metadata =
+      Result.bind note.metadata.value (fun value ->
+        Rules.decode_metadata { note.metadata with value })
+      |> Result.map_error (List.map (Diagnostic.with_fallback_span metadata_span))
+    in
+    { located with value =
+      { Observation.Source.id = note.id;
+        title = note.title;
+        metadata = { note.metadata with value = metadata };
+        body = { note.body with value = List.map decode_content note.body.value } } }
 
   let decode_project (project : (_, _) Observation.project) =
-    Result.map
-      (fun notes -> { Observation.identities = project.identities; notes })
-      (collect decode_source project.notes)
+    { project with notes = List.map decode_source project.notes }
 end
 
 module type FRONTEND = sig
@@ -143,21 +156,28 @@ module type FRONTEND = sig
   type error
 
   val interpret :
-    (metadata, relation, action, consumption, error) Observation.interpreter
+    action ->
+    (metadata decoded, relation, action decoded_action, consumption, error)
+      Observation.contribution list
 end
 
 module Make (Frontend : FRONTEND) = struct
-  type error =
-    | Decode of Diagnostic.t list
-    | Observe of Frontend.error Observation.issue list
-
   let observe project =
-    match Frontend.decode_project project with
-    | Error diagnostics -> Error (Decode diagnostics)
-    | Ok project ->
-        match Observation.expand ~interpret:Frontend.interpret project with
-        | Error issues -> Error (Observe issues)
-        | Ok declarations ->
-            Result.map_error (fun issues -> Observe issues)
-              (Observation.assemble declarations)
+    let interpret = function
+      | Error failure -> [Observation.Fail (Action_decode failure)]
+      | Ok action -> List.map (function
+          | Observation.Define note -> Observation.Define note
+          | Observation.Relate { target; relation } -> Observation.Relate { target; relation }
+          | Observation.Emit content -> Observation.Emit content
+          | Observation.Fail error -> Observation.Fail (Interpretation error))
+          (Frontend.interpret action)
+    in
+    let metadata_errors = function
+      | Ok _ -> []
+      | Error diagnostics -> [Metadata_decode diagnostics]
+    in
+    let declarations, issues =
+      Observation.expand ~metadata_errors ~interpret (Frontend.decode_project project)
+    in
+    Observation.assemble ~issues declarations
 end

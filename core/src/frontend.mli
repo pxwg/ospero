@@ -43,8 +43,7 @@ module Invocation : sig
   }
 end
 
-(** A problem reported while extracting or decoding input.
-    [None] means no direct source location is known. *)
+(** A problem reported while extracting or decoding input. *)
 module Diagnostic : sig
   (** A step from the decoded value towards the offending occurrence. *)
   type segment =
@@ -67,9 +66,13 @@ module Diagnostic : sig
     path : segment list;
         (** Outermost first; empty at the decoded value itself. *)
     span : Provenance.span option;
+        (** The range to report, when known. This may be an enclosing range. *)
   }
 
   val make : ?path:segment list -> ?span:Provenance.span -> problem -> t
+
+  (** Supply an enclosing range only when the diagnostic has no range. *)
+  val with_fallback_span : Provenance.span option -> t -> t
 end
 
 (** Project-supplied rules for the values occurring in the current layer. *)
@@ -85,26 +88,46 @@ module type DECODING = sig
     Invocation.t -> (action, Diagnostic.t list) result
 end
 
-(** Current-layer Source decoding, reusable for top-level and nested input. *)
+(** What Syntax read from the source: a value for later decoding, or the
+    diagnostics explaining why the construct could not be read. *)
+type 'a read = ('a, Diagnostic.t list) result
+
+(** A note as Syntax hands it over. Metadata and each action keep their own
+    reading outcome, so one unreadable construct degrades only its card. *)
+type raw_note = (Payload.value read, Invocation.t read) Observation.Source.note
+
+type raw_project = (Payload.value read, Invocation.t read) Observation.project
+
+type 'a decoded = ('a, Diagnostic.t list) result
+
+(** Why an action is unavailable: Syntax could not read the call, or the
+    call was read but did not decode. *)
+type action_failure =
+  | Unread of Diagnostic.t list
+  | Undecoded of Invocation.t * Diagnostic.t list
+
+type 'a decoded_action = ('a, action_failure) result
+
+type 'error failure =
+  | Metadata_decode of Diagnostic.t list
+      (** Unreadable or undecodable metadata. *)
+  | Action_decode of action_failure
+  | Interpretation of 'error
+
+(** Decode the current Source layer. Identity, text, provenance and order
+    are preserved. Metadata and each action retain their own outcome; reading
+    failures pass through unchanged. Contents retained by an action are not
+    decoded here. *)
 module type DECODER = sig
   type metadata
   type action
 
-  (** Decode the note's metadata and the invocations directly in its body.
-      The raw metadata occurrence is passed to [decode_metadata] as a
-      located [Payload.t].
-      Identity, title, text, order and provenance are preserved.
-      Contents retained by an action are not decoded here. *)
   val decode_source :
-    (Payload.value, Invocation.t) Observation.Source.note Provenance.located ->
-    ((metadata, action) Observation.Source.note Provenance.located,
-     Diagnostic.t list) result
+    raw_note Provenance.located ->
+    (metadata decoded, action decoded_action) Observation.Source.note Provenance.located
 
-  (** Decode every initial note; registered identities are kept unchanged.
-      Diagnostics from all notes are reported together. *)
   val decode_project :
-    (Payload.value, Invocation.t) Observation.project ->
-    ((metadata, action) Observation.project, Diagnostic.t list) result
+    raw_project -> (metadata decoded, action decoded_action) Observation.project
 end
 
 (** Derive both decoding entries from the same current-layer traversal. *)
@@ -123,22 +146,18 @@ module type FRONTEND = sig
   type consumption
   type error
 
-  (** Interpret a decoded action into ordered contributions.
-      Observation owns recursive expansion and note-context switching.
-      Prefer exhaustive matching without a wildcard when [action] is a variant. *)
+  (** Interpret a decoded action into ordered contributions. A generated note
+      can itself carry decoding failures. *)
   val interpret :
-    (metadata, relation, action, consumption, error) Observation.interpreter
+    action ->
+    (metadata decoded, relation, action decoded_action, consumption, error)
+      Observation.contribution list
 end
 
 module Make (Frontend : FRONTEND) : sig
-  type error =
-    | Decode of Diagnostic.t list
-    | Observe of Frontend.error Observation.issue list
-
-  (** Decode the raw project, expand actions, then assemble the observation.
-      Stop at the first failing stage; policy evaluation remains separate. *)
+  (** Decode, expand, and assemble a graph together with all failure contributions. *)
   val observe :
-    (Payload.value, Invocation.t) Observation.project ->
-    ((Frontend.metadata, Frontend.relation, Frontend.consumption) Observation.t,
-     error) result
+    raw_project ->
+    (Frontend.metadata decoded, Frontend.relation, Frontend.consumption,
+     Frontend.error failure) Observation.t
 end

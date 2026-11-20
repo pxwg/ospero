@@ -13,12 +13,13 @@ val language : Text.Language.t
 type value = Value.t
 
 (** The identity rules read this at each heading. [metadata] is [None]
-    without a [///] block. *)
+    without a [///] block, and [Some (Error _)] when the block is not valid
+    TOML; the heading still declares a card. *)
 type heading = {
   level : int;
   title : string Provenance.located;
   label : string Provenance.located option;
-  metadata : Value.field list option;
+  metadata : Value.field list Frontend.read option;
 }
 
 type node =

@@ -53,7 +53,7 @@ module Observed : sig
 end
 
 (** Ordered contributions returned by an action interpreter. *)
-type ('metadata, 'relation, 'action, 'consumption) contribution =
+type ('metadata, 'relation, 'action, 'consumption, 'error) contribution =
   | Define of ('metadata, 'action) Source.note Provenance.located
       (** Contribute a definition for a registered identity.
           The core observes its body under that identity; subsequent
@@ -69,13 +69,15 @@ type ('metadata, 'relation, 'action, 'consumption) contribution =
   | Emit of 'consumption Observed.content
       (** Append action-free content to the current note's observed body. *)
 
-(** Interpret an action into ordered contributions or project-defined errors.
+  | Fail of 'error
+      (** Report a failed action contribution without discarding siblings. *)
+
+(** Interpret an action into ordered contributions.
     The action carries its explicit inputs; the core supplies no context.
     Contributions belong to the note whose body contains the action. *)
 type ('metadata, 'relation, 'action, 'consumption, 'error) interpreter =
   'action ->
-  (('metadata, 'relation, 'action, 'consumption) contribution list,
-   'error list) result
+  ('metadata, 'relation, 'action, 'consumption, 'error) contribution list
 
 (** Expanded graph and body declarations, awaiting assembly.
     Lists preserve declaration order and duplicate entries for validation.
@@ -89,54 +91,118 @@ type ('metadata, 'relation, 'consumption) declarations = {
      'consumption Observed.content Provenance.located list Provenance.located) list;
 }
 
-(** Structural diagnostics and errors reported by the project interpreter. *)
+(** Failed contributions retain the source span of the affected occurrence. *)
 type 'error issue =
   | Unregistered_definition of Graph.Vertex_id.t
   | Duplicate_definition of Graph.Vertex_id.t
+  | Unavailable_generator of Graph.Vertex_id.t * Graph.Vertex_id.t
+  | Metadata_error of Graph.Vertex_id.t * 'error
   | Action_error of Graph.Vertex_id.t * 'error
-      (** The current note's identity and the interpreter's error. *)
-  | Graph_issue of Graph.issue
+  | Reference_error of {
+      source : Graph.Vertex_id.t;
+      problem : Graph.issue;
+    }
   | Missing_body of Graph.Vertex_id.t
   | Duplicate_body of Graph.Vertex_id.t
   | Unknown_body_vertex of Graph.Vertex_id.t
 
-(** Freeze registered identities, then expand note bodies using the
-    interpreter.
-    Edge IDs use the source identity and its zero-based Relate occurrence index.
-    Endpoint existence is checked during assembly.
-    Plain text retains its source span. Each Relate and Emit contribution
-    inherits the current action's span, including absence of a source span.
-    Define records the generating action separately from the supplied direct
-    definition and field spans. Nested definitions retain their immediate
-    generating note identity; no source position is fabricated. *)
+type subject = Note of Graph.Vertex_id.t | Reference of Graph.Edge_id.t
+
+type 'error failure = (subject, 'error issue Provenance.located) Failure.t
+
+type ('relation, 'error) rejected_reference = {
+  declaration : 'relation Graph.edge Provenance.located;
+  reasons : 'error failure list;
+}
+
+(** Freeze registered identities and expand actions. Edge IDs use the source
+    identity and its zero-based Relate occurrence index. Define preserves both
+    the direct definition location and the generating action's location.
+    [metadata_errors] identifies failures carried by a decoded metadata value. *)
 val expand :
+  ?metadata_errors:('metadata -> 'error list) ->
   interpret:('metadata, 'relation, 'action, 'consumption, 'error) interpreter ->
   ('metadata, 'action) project ->
-  (('metadata, 'relation, 'consumption) declarations, 'error issue list) result
+  ('metadata, 'relation, 'consumption) declarations * 'error issue Provenance.located list
 
-(** A completed observation, with one observed body per graph vertex. *)
-type ('metadata, 'relation, 'consumption) t
+(** The assembled graph and the contributions that could not be resolved. *)
+type ('metadata, 'relation, 'consumption, 'error) t
 
-(** Validate graph structure and require exactly one body per vertex.
-    An empty body is represented by an explicit empty list.
-    Return a complete result or diagnostics.
-    Assembly reports graph and body issues; it does not invoke the interpreter. *)
+(** Keep uniquely defined vertices and uniquely identified edges with valid
+    endpoints. Reject every candidate for an ambiguous identity. Keep all
+    diagnostics, including earlier failures, and all rejected references. *)
 val assemble :
+  ?issues:'error issue Provenance.located list ->
   ('metadata, 'relation, 'consumption) declarations ->
-  (('metadata, 'relation, 'consumption) t, 'error issue list) result
+  ('metadata, 'relation, 'consumption, 'error) t
+
+val issues :
+  ('metadata, 'relation, 'consumption, 'error) t ->
+  'error issue Provenance.located list
+
+(** Issues owned by a vertex, including its rejected references. *)
+val issues_for :
+  ('metadata, 'relation, 'consumption, 'error) t -> Graph.Vertex_id.t ->
+  'error issue Provenance.located list
+
+val unresolved_references :
+  ('metadata, 'relation, 'consumption, 'error) t ->
+  'relation Graph.edge Provenance.located list
+
+(** Records retain their identities across every query of this observation. *)
+val failure_records :
+  ('metadata, 'relation, 'consumption, 'error) t -> 'error failure list
+
+val failures_for :
+  ('metadata, 'relation, 'consumption, 'error) t -> Graph.Vertex_id.t ->
+  'error failure list
+
+(** The owning card, including the source of a rejected reference. *)
+val failure_owner : 'error failure -> Graph.Vertex_id.t
+
+type product = Metadata | Body | Outgoing
+
+(** Documented gaps for a source product. An action failure can affect both
+    the body and the outgoing references. *)
+val failures_for_product :
+  ('metadata, 'relation, 'consumption, 'error) t -> product -> Graph.Vertex_id.t ->
+  'error failure list
+
+(** Read the metadata independently of the title, definition and body.
+    [None] denotes an unresolved card. *)
+val metadata :
+  ('metadata, 'relation, 'consumption, 'error) t -> Graph.Vertex_id.t ->
+  ('metadata, 'error failure list) result option
+
+val rejected_references :
+  ('metadata, 'relation, 'consumption, 'error) t ->
+  ('relation, 'error) rejected_reference list
+
+type ('relation, 'error) outgoing = {
+  resolved : 'relation Graph.edge list;
+  unresolved : ('relation, 'error) rejected_reference list;
+  failures : 'error failure list;
+}
+
+(** Read the known outgoing edges and their gaps. An action failure is
+    conservatively treated as a possible gap. [None] means the source does
+    not resolve to a graph vertex; consult [failures_for] for its failures. *)
+val outgoing :
+  ('metadata, 'relation, 'consumption, 'error) t -> Graph.Vertex_id.t ->
+  ('relation, 'error) outgoing option
 
 (** The semantic graph contains unwrapped title and metadata values.
     Source locations remain owned by this observation, independently of
     policy computations. *)
 val graph :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   ('metadata, 'relation) Graph.knowledge_graph
 
 (** Return the body in observation order.
-    [None] denotes an identity absent from the result graph;
+    [None] denotes an unavailable body or an identity absent from the graph;
     [Some []] denotes a vertex with an empty body. *)
 val body :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   Graph.Vertex_id.t ->
   'consumption Observed.content Provenance.located list option
 
@@ -144,7 +210,7 @@ val body :
     [None] means the edge is absent; [Some None] means it exists without a
     known source span. Sources are retained outside the semantic graph. *)
 val edge_source :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   Graph.Edge_id.t ->
   Provenance.span option option
 
@@ -153,7 +219,7 @@ val edge_source :
     known metadata span. Generated definitions retain their supplied metadata
     span; the generating action's span is not substituted for a missing one. *)
 val metadata_source :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   Graph.Vertex_id.t ->
   Provenance.span option option
 
@@ -161,7 +227,7 @@ val metadata_source :
     [None] means the vertex is absent; [Some None] means it exists without a
     known title span. A generating action's span is not substituted. *)
 val title_source :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   Graph.Vertex_id.t ->
   Provenance.span option option
 
@@ -170,14 +236,14 @@ val title_source :
     direct definition span. Generated notes preserve their supplied span;
     no action or title span is substituted. *)
 val note_source :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   Graph.Vertex_id.t ->
   Provenance.span option option
 
 (** The original body container span, including delimiters when supplied by
-    the DSL. Empty bodies retain this location. Absence follows [note_source]. *)
+    the DSL. Empty bodies retain this location. Absence follows [body]. *)
 val body_source :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   Graph.Vertex_id.t ->
   Provenance.span option option
 
@@ -185,7 +251,7 @@ val body_source :
     Generated definitions record the immediate action and owning note even
     when the action itself has no source span. Direct field spans are unchanged. *)
 val generated_from :
-  ('metadata, 'relation, 'consumption) t ->
+  ('metadata, 'relation, 'consumption, 'error) t ->
   Graph.Vertex_id.t ->
   generation option option
 

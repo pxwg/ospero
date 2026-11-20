@@ -223,16 +223,17 @@ type 'native document = {
   native : 'native;
 }
 
-type raw_note = (Payload.value, Invocation.t) Observation.Source.note
+type raw_note = Frontend.raw_note
 
 type extracted = {
   notes : raw_note Provenance.located list;
   declared : Graph.Vertex_id.t Provenance.located list;
+  diagnostics : Diagnostic.t list;
 }
 
 type 'native adapter = {
   language : Text.Language.t;
-  extract : 'native document -> (extracted, Diagnostic.t list) result;
+  extract : 'native document -> extracted;
   contents :
     Text.t Provenance.located -> (raw_note Provenance.located, Diagnostic.t list) result;
 }
@@ -257,9 +258,12 @@ let with_adapter config ?span language run =
   | Some adapter -> run adapter
   | None -> unsupported ?span language
 
+(* A document without an adapter contributes only its diagnostic. *)
 let extract config document =
   let span = { Provenance.file = document.file; start = 0; stop = 0 } in
-  with_adapter config ~span document.language (fun adapter -> adapter.extract document)
+  match with_adapter config ~span document.language (fun adapter -> Ok (adapter.extract document)) with
+  | Ok extracted -> extracted
+  | Error diagnostics -> { notes = []; declared = []; diagnostics }
 
 let parse_contents config (contents : Text.t Provenance.located) =
   with_adapter config ?span:contents.span contents.value.language
@@ -267,17 +271,14 @@ let parse_contents config (contents : Text.t Provenance.located) =
 
 (* Initial notes and nested declarations share the batch's identity list. *)
 let parse_project config documents =
-  let gather (notes, identities, errors) document =
-    match extract config document with
-    | Error found -> notes, identities, List.rev_append found errors
-    | Ok batch ->
-        let roots = List.map (fun note -> note.Provenance.value.Observation.Source.id) batch.notes in
-        let declared = List.map (fun id -> id.Provenance.value) batch.declared in
-        List.rev_append batch.notes notes,
-        List.rev_append declared (List.rev_append roots identities),
-        errors
+  let gather (notes, identities, diagnostics) document =
+    let batch = extract config document in
+    let roots = List.map (fun note -> note.Provenance.value.Observation.Source.id) batch.notes in
+    let declared = List.map (fun id -> id.Provenance.value) batch.declared in
+    List.rev_append batch.notes notes,
+    List.rev_append declared (List.rev_append roots identities),
+    List.rev_append batch.diagnostics diagnostics
   in
-  let notes, identities, errors = List.fold_left gather ([], [], []) documents in
-  match errors with
-  | [] -> Ok { Observation.notes = List.rev notes; identities = List.rev identities }
-  | _ -> Error (List.rev errors)
+  let notes, identities, diagnostics = List.fold_left gather ([], [], []) documents in
+  { Observation.notes = List.rev notes; identities = List.rev identities },
+  List.rev diagnostics

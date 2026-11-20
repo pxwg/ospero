@@ -302,9 +302,9 @@ let rec region ~file ~headings text start stop =
         identity = Provenance.located ~span:(span file pos e) { level = stars; title; properties };
         title = Option.get title.span;
         metadata =
-          List.map (fun ((k : string Provenance.located), v) ->
+          Ok (List.map (fun ((k : string Provenance.located), v) ->
             { Payload_rules.name = { k with value = String.lowercase_ascii k.value }; value = v })
-            properties;
+            properties);
         metadata_span; start = pos; body_start }
       :: !heads;
     body_start
@@ -314,7 +314,7 @@ let rec region ~file ~headings text start stop =
 
 let scan ~file text ~start =
   let headings, nodes = region ~file ~headings:true text start (String.length text) in
-  Ok { Card.headings; nodes }
+  { Card.headings; nodes }
 
 let children = function
   | Keyword { inner; _ } | Block { inner; _ } -> inner

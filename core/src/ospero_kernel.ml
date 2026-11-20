@@ -1,5 +1,6 @@
 (** Public library modules. Internal helpers are deliberately not re-exported. *)
 module Clone = Clone
+module Failure = Failure
 module Frontend = Frontend
 module Graph = Graph
 module Observation = Observation

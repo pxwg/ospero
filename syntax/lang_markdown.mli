@@ -10,18 +10,25 @@ val language : Text.Language.t
 
 type value = Value.t
 
+type metadata = {
+  fields : Value.field list;
+  diagnostics : Frontend.Diagnostic.t list;
+}
+
 (** The identity rules read this at each heading. [metadata] is [None]
-    without a [zk-meta] fence. *)
+    without a [zk-meta] fence. Otherwise, [fields] contains the complete
+    entries before the first TOML syntax error, if any. *)
 type heading = {
   level : int;
   title : string Provenance.located;
-  metadata : Value.field list option;
+  metadata : metadata option;
 }
 
 type node =
   | Directive of {
       name : string Provenance.located;
-      arguments : Value.field list;
+      arguments : Value.field list Frontend.read;
+          (** [Error] when the [zk-args] fence is not valid TOML. *)
       body : Text.t Provenance.located option;
       inner : node Provenance.located list;  (** Directives in the body. *)
     }

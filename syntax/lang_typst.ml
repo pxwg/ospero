@@ -10,7 +10,7 @@ type heading = {
   level : int;
   title : string Provenance.located;
   label : string Provenance.located option;
-  metadata : Value.field list option;
+  metadata : Value.field list Frontend.read option;
 }
 
 type node =
@@ -57,7 +57,6 @@ type st = {
   text : string;
   len : int;
   mutable heads : (heading, value) Card.heading list;
-  mutable errors : Frontend.Diagnostic.t list;
 }
 
 let span st start stop = { Provenance.file = st.file; start; stop }
@@ -223,11 +222,7 @@ and markup st ~top i =
         in
         blank 0;
         let padded = String.make block_start ' ' ^ Bytes.to_string blanked in
-        let fields =
-          match Toml.parse ~file:st.file padded ~start:block_start ~stop:block_stop with
-          | Ok fields -> fields
-          | Error found -> st.errors <- found @ st.errors; []
-        in
+        let fields = Toml.parse ~file:st.file padded ~start:block_start ~stop:block_stop in
         let stop = if block_stop > block_start && st.text.[block_stop - 1] = '\n' then block_stop - 1 else block_stop in
         heading next (Some (block_start, stop, fields))
     | None -> block_stop
@@ -259,7 +254,7 @@ and markup st ~top i =
       { Card.level;
         identity = Provenance.located ~span:(span st i e) { level; title; label; metadata = fields };
         title = span st t0 t1;
-        metadata = Value.fields (Option.value fields ~default:[]);
+        metadata = Option.fold fields ~none:(Ok []) ~some:(Result.map Value.fields);
         metadata_span; start; body_start = min st.len (e + 1) }
       :: st.heads;
     i + level
@@ -391,11 +386,9 @@ and expr st i =
       q, located i q' (Value.Other (String.sub st.text i (q' - i))), nodes
 
 let scan ~file text ~start =
-  let st = { file; text; len = String.length text; heads = []; errors = [] } in
+  let st = { file; text; len = String.length text; heads = [] } in
   let _, nodes = markup st ~top:true start in
-  match st.errors with
-  | [] -> Ok { Card.headings = List.rev st.heads; nodes }
-  | errors -> Error (List.rev errors)
+  { Card.headings = List.rev st.heads; nodes }
 
 let children = function Call { inner; _ } -> inner | Reference _ | Card _ -> []
 

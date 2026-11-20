@@ -192,9 +192,15 @@ module Action_rules = struct
     | None, None -> None
 
   (* The cursor only moves forward. Each placed action cuts the text up to its
-     start and resumes after what it takes. *)
+     start and resumes after what it takes. An unreadable construct takes
+     nothing: its diagnostics stand at its start and its text is kept. *)
   let body rules context ~(source : Text.t) (span : Provenance.span) nodes =
-    let problem (at : Provenance.span) message = Diagnostic.make ~span:at (Invalid message) in
+    let unread ?span diagnostics =
+      Provenance.located ?span (Observation.Source.Action (Error diagnostics))
+    in
+    let problem (at : Provenance.span) message =
+      unread ~span:at [ Diagnostic.make ~span:at (Invalid message) ]
+    in
     let text start stop =
       if start >= stop then []
       else
@@ -204,27 +210,40 @@ module Action_rules = struct
     let inside (at : Provenance.span) =
       at.file = span.file && span.start <= at.start && at.start <= at.stop && at.stop <= span.stop
     in
-    let step (cursor, contents, errors) node =
-      match read rules context node with
-      | No_match -> cursor, contents, errors
-      | Invalid found -> cursor, contents, List.rev_append found errors
-      | Matched occurrence ->
-          let action = Provenance.map (fun call -> Observation.Source.Action call) occurrence.call in
-          match place occurrence with
-          | None -> cursor, action :: contents, errors
-          | Some at when not (inside at) ->
-              cursor, contents, problem at "action source lies outside its body" :: errors
-          | Some at when at.start < cursor ->
-              cursor, contents, problem at "action source overlaps a preceding action" :: errors
-          | Some at -> at.stop, action :: List.rev_append (text cursor at.start) contents, errors
+    let at_start (cursor, contents) where item =
+      match where with
+      | Some (at : Provenance.span) when inside at && at.start >= cursor ->
+          at.start, item :: List.rev_append (text cursor at.start) contents
+      | _ -> cursor, item :: contents
+    in
+    let step (cursor, contents) (node : _ Provenance.located) =
+      let failed found =
+        let found = List.map (Diagnostic.with_fallback_span node.span) found in
+        at_start (cursor, contents) node.span (unread ?span:node.span found)
+      in
+      match node.value with
+      | Error found -> failed found
+      | Ok value ->
+          match read rules context { node with value } with
+          | No_match -> cursor, contents
+          | Invalid found -> failed found
+          | Matched occurrence ->
+              let action =
+                Provenance.map (fun call -> Observation.Source.Action (Ok call)) occurrence.call
+              in
+              match place occurrence with
+              | None -> cursor, action :: contents
+              | Some at when not (inside at) ->
+                  cursor, problem at "action source lies outside its body" :: contents
+              | Some at when at.start < cursor ->
+                  cursor, problem at "action source overlaps a preceding action" :: contents
+              | Some at -> at.stop, action :: List.rev_append (text cursor at.start) contents
     in
     if not (0 <= span.start && span.start <= span.stop && span.stop <= String.length source.text)
-    then Error [ problem span "body span lies outside its source" ]
+    then [ problem span "body span lies outside its source" ]
     else
-      let cursor, contents, errors = List.fold_left step (span.start, [], []) nodes in
-      match errors with
-      | [] -> Ok (List.rev_append contents (text cursor span.stop))
-      | _ -> Error (List.rev errors)
+      let cursor, contents = List.fold_left step (span.start, []) nodes in
+      List.rev_append contents (text cursor span.stop)
 
   (* The adapter finds the name and field boundaries. The declaration supplies
      the expected value descriptors for those fields. *)

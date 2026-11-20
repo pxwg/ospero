@@ -147,12 +147,16 @@ module Action_rules : sig
   (** A body span of [source]: verbatim text around the actions read from its
       nodes, in node order. An action stands at the start of what it takes;
       with nothing taken, at its call's position, keeping the text there; an
-      unlocated call follows the preceding content. Placed actions must lie in
-      the body and must not overlap; violations are diagnostics. *)
+      unlocated call follows the preceding content.
+
+      A node may arrive already known to be unreadable ([Error]). Such a node,
+      a rule answering [Invalid], or an action placed outside the body or over
+      a preceding one becomes an unreadable action at its start, keeping its
+      text. The body is always assembled; its failures stay in place. *)
   val body :
     ('node, 'context) t -> 'context -> source:Text.t -> Provenance.span ->
-    'node Provenance.located list ->
-    (Invocation.t Observation.Source.content Provenance.located list, Diagnostic.t list) result
+    ('node, Diagnostic.t list) result Provenance.located list ->
+    Invocation.t Frontend.read Observation.Source.content Provenance.located list
 
   (** Resolve the name and extract the arguments of a named call. *)
   val named :

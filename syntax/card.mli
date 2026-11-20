@@ -27,12 +27,13 @@ type 'value context = {
 }
 
 (** A heading reported by a scanner. Identity rules read [identity]; when one
-    matches, the heading declares a card. *)
+    matches, the heading declares a card. Metadata the scanner could not read
+    is [Error]; the card is still declared and its metadata reported. *)
 type ('heading, 'value) heading = {
   level : int;
   identity : 'heading Provenance.located;
   title : Provenance.span;
-  metadata : 'value Rules.Payload_rules.field list;
+  metadata : 'value Rules.Payload_rules.field list Frontend.read;
   metadata_span : Provenance.span option;
   start : int;  (** Where the card begins, including metadata written before it. *)
   body_start : int;  (** Where the body begins, after heading and metadata. *)
@@ -50,13 +51,11 @@ type ('native, 'heading, 'value, 'node) language = {
   language : Text.Language.t;
   source : 'native -> string;
       (** The text the native document was read from. Spans index it. *)
-  scan :
-    file:string -> 'native ->
-    (('heading, 'value, 'node) outline, Diagnostic.t list) result;
-      (** Read a whole document. *)
-  read :
-    file:string -> string -> start:int ->
-    (('heading, 'value, 'node) outline, Diagnostic.t list) result;
+  scan : file:string -> 'native -> ('heading, 'value, 'node) outline;
+      (** Read a whole document. A scanner reports problems in the construct
+          they belong to, such as unreadable metadata, and never gives up on
+          the document. *)
+  read : file:string -> string -> start:int -> ('heading, 'value, 'node) outline;
       (** Read Contents in place: scan from [start] to the end of the text,
           which is padded so that spans stay file offsets. *)
   nested : nested -> 'node;
@@ -67,7 +66,14 @@ type ('native, 'heading, 'value, 'node) language = {
 (** Calls of the action named [define] have their Contents arguments read
     as cards whose IDs are pre-registered. With [~unknown_metadata:`Ignore],
     metadata fields the schema does not declare are dropped instead of
-    reported. *)
+    reported.
+
+    Failures degrade only their card. A heading whose identity rule answers
+    [Invalid] declares no card and stays a section of the enclosing card,
+    where its diagnostics stand as an unreadable action; outside every card
+    they are document diagnostics. Unreadable metadata and body constructs
+    stay in their note. Raises [Invalid_argument] unless the metadata schema
+    describes a record. *)
 val adapter :
   ('native, 'heading, 'value, 'node) language ->
   ?unknown_metadata:[ `Ignore | `Report ] ->

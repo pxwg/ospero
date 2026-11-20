@@ -127,23 +127,28 @@ type 'native document = {
   native : 'native;
 }
 
-type raw_note = (Payload.value, Invocation.t) Observation.Source.note
+type raw_note = Frontend.raw_note
 
-(** The initial notes of a document and the identities of declarations that
-    become notes only during expansion. Root IDs come from the notes. *)
+(** What an adapter read from one document. A problem owned by a card stays
+    inside its note, as unreadable metadata or an unreadable action at its
+    place. [diagnostics] holds only problems no card owns, such as a heading
+    outside every card. Root IDs come from the notes; [declared] lists the
+    identities that become notes only during expansion. *)
 type extracted = {
   notes : raw_note Provenance.located list;
   declared : Graph.Vertex_id.t Provenance.located list;
+  diagnostics : Diagnostic.t list;
 }
 
 (** An adapter reads one source language at both entry points of the data
     flow: whole documents, and Contents retained by an action. *)
 type 'native adapter = {
   language : Text.Language.t;
-  extract : 'native document -> (extracted, Diagnostic.t list) result;
+  extract : 'native document -> extracted;
   contents :
     Text.t Provenance.located -> (raw_note Provenance.located, Diagnostic.t list) result;
-      (** The note defined by these Contents, as its current layer. *)
+      (** The note defined by these Contents, as its current layer. [Error]
+          only when the Contents define no single card. *)
 }
 
 type 'native config
@@ -152,11 +157,11 @@ type 'native config
     share a language. *)
 val configure : 'native adapter list -> 'native config
 
-(** Extract the batch before any frontend decoding. Keep note order and
-    collect diagnostics across documents. *)
+(** Extract the batch before any frontend decoding, keeping note order. Every
+    readable card contributes, whatever fails around it. The diagnostics are
+    the problems no card owns, including documents without an adapter. *)
 val parse_project :
-  'native config -> 'native document list ->
-  ((Payload.value, Invocation.t) Observation.project, Diagnostic.t list) result
+  'native config -> 'native document list -> Frontend.raw_project * Diagnostic.t list
 
 (** The next layer inside Contents, read by the adapter for their language.
     An interpreter decodes it with [Frontend.DECODER.decode_source]; the

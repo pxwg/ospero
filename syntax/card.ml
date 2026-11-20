@@ -19,7 +19,7 @@ type ('heading, 'value) heading = {
   level : int;
   identity : 'heading Provenance.located;
   title : Provenance.span;
-  metadata : 'value Payload_rules.field list;
+  metadata : 'value Payload_rules.field list Frontend.read;
   metadata_span : Provenance.span option;
   start : int;
   body_start : int;
@@ -33,22 +33,13 @@ type ('heading, 'value, 'node) outline = {
 type ('native, 'heading, 'value, 'node) language = {
   language : Text.Language.t;
   source : 'native -> string;
-  scan :
-    file:string -> 'native ->
-    (('heading, 'value, 'node) outline, Diagnostic.t list) result;
-  read :
-    file:string -> string -> start:int ->
-    (('heading, 'value, 'node) outline, Diagnostic.t list) result;
+  scan : file:string -> 'native -> ('heading, 'value, 'node) outline;
+  read : file:string -> string -> start:int -> ('heading, 'value, 'node) outline;
   nested : nested -> 'node;
   children : 'node -> 'node Provenance.located list;
 }
 
 let invalid ?span message = Diagnostic.make ?span (Invalid message)
-
-let collect results =
-  match List.concat_map (function Error e -> e | Ok _ -> []) results with
-  | [] -> Ok (List.filter_map Result.to_option results)
-  | errors -> Error errors
 
 let start_of (node : _ Provenance.located) =
   match node.span with Some s -> s.start | None -> max_int
@@ -97,15 +88,27 @@ type ('heading, 'value, 'node) tree = {
 and ('heading, 'value, 'node) item =
   | Node of 'node Provenance.located
   | Child of ('heading, 'value, 'node) tree
+  | Unreadable of Diagnostic.t list Provenance.located
+      (** A heading that tried to declare a card and failed. *)
 
 (* A card governs the headings after it until one at its level or above.
-   Section headings stay in the card; card headings below it nest. *)
+   Section headings stay in the card; card headings below it nest. A heading
+   whose identity is invalid is a section, and its diagnostics belong to the
+   innermost card around it. Returns the roots and the diagnostics outside
+   every card. *)
 let trees ~file identities (outline : _ outline) ~stop =
   let heads = Array.of_list outline.headings in
   let count = Array.length heads in
   let ids = Array.map (fun h -> Identity_rules.read identities h.identity) heads in
-  let errors =
-    Array.to_list ids |> List.concat_map (function Rules.Invalid e -> e | _ -> [])
+  let invalid =
+    List.filter_map (fun i ->
+      match ids.(i) with
+      | Rules.Invalid found ->
+          let span = heads.(i).identity.span in
+          let found = List.map (Diagnostic.with_fallback_span span) found in
+          Some (heads.(i).start, Provenance.located ?span found)
+      | Rules.No_match | Rules.Matched _ -> None)
+      (List.init count Fun.id)
   in
   let governs i bound =
     let rec next j =
@@ -129,27 +132,33 @@ let trees ~file identities (outline : _ outline) ~stop =
   and tree i id stop =
     let head = heads.(i) in
     let children = cards (i + 1) stop [] in
-    let inside (n : _ Provenance.located) =
-      let at = start_of n in
+    let own at =
       at >= head.body_start && at < stop
       && not (List.exists (fun c -> at >= c.extent.start && at < c.extent.stop) children)
     in
-    let own = List.filter inside outline.nodes |> List.map (fun n -> start_of n, Node n) in
+    let nodes =
+      List.filter (fun n -> own (start_of n)) outline.nodes |> List.map (fun n -> start_of n, Node n)
+    in
+    let failures =
+      List.filter_map (fun (at, found) -> if own at then Some (at, Unreadable found) else None) invalid
+    in
     let nested = List.map (fun c -> c.extent.start, Child c) children in
     let items =
-      List.stable_sort (fun (a, _) (b, _) -> compare a b) (own @ nested) |> List.map snd
+      List.stable_sort (fun (a, _) (b, _) -> compare a b) (nodes @ failures @ nested)
+      |> List.map snd
     in
     { head; id; extent = span head.start stop; items }
   in
   let roots = cards 0 stop [] in
-  match errors with [] -> Ok roots | _ -> Error errors
+  let outside at = not (List.exists (fun r -> at >= r.extent.start && at < r.extent.stop) roots) in
+  let unowned =
+    List.concat_map (fun (at, (found : _ Provenance.located)) ->
+      if outside at then found.value else []) invalid
+  in
+  roots, unowned
 
 (* {1 The adapter} *)
 
-let metadata_fields frontend =
-  match Syntax.Frontend_input.metadata_shape frontend with
-  | Schema.Record fields -> Ok fields
-  | _ -> Error [ invalid "the metadata schema must describe a record" ]
 
 (* The field that declared the ID is structure, not metadata. *)
 let without_identity (id : _ Provenance.located) fields =
@@ -167,11 +176,14 @@ let declared_only schema fields =
     List.exists (fun (s : Schema.field) -> s.name = field.name.value) schema) fields
 
 let adapter lang ?(unknown_metadata = `Report) ~values ~identities ~actions ~define frontend =
+  let schema =
+    match Syntax.Frontend_input.metadata_shape frontend with
+    | Schema.Record fields -> fields
+    | _ -> invalid_arg "Card.adapter: the metadata schema must describe a record"
+  in
   let reader = Payload_rules.reader values in
   let named = named frontend reader in
-  let parse ~file text outline =
-    Result.bind outline (fun outline -> trees ~file identities outline ~stop:(String.length text))
-  in
+  let parse ~file text outline = trees ~file identities outline ~stop:(String.length text) in
   let note text tree =
     let slice (s : Provenance.span) =
       Provenance.located ~span:s
@@ -179,63 +191,60 @@ let adapter lang ?(unknown_metadata = `Report) ~values ~identities ~actions ~def
     in
     let context = { level = tree.head.level; slice; values = reader; named } in
     (* A node no rule takes is read through its children. *)
-    let rec expand items =
-      List.concat_map (fun item ->
-        let node =
-          match item with
-          | Node n -> n
-          | Child c ->
-              Provenance.located ~span:c.extent
-                (lang.nested { level = c.head.level; extent = c.extent })
-        in
-        match Action_rules.read actions context node, item with
-        | Rules.No_match, Node n -> expand (List.map (fun c -> Node c) (lang.children n.value))
-        | Rules.No_match, Child c -> expand c.items
-        | _ -> [ node ])
+    let rec nodes items =
+      List.concat_map (function
+        | Unreadable found -> [ Provenance.map (fun found -> Error found) found ]
+        | Node n as item -> read_or_children item n
+        | Child c as item ->
+            read_or_children item
+              (Provenance.located ~span:c.extent
+                 (lang.nested { level = c.head.level; extent = c.extent })))
         items
+    and read_or_children item node =
+      match Action_rules.read actions context node, item with
+      | Rules.No_match, Node n -> nodes (List.map (fun c -> Node c) (lang.children n.value))
+      | Rules.No_match, Child c -> nodes c.items
+      | _ -> [ Provenance.map Result.ok node ]
     in
     let metadata =
-      Result.bind (metadata_fields frontend) (fun schema ->
-        let fields = without_identity tree.id tree.head.metadata in
+      Result.bind tree.head.metadata (fun fields ->
+        let fields = without_identity tree.id fields in
         let fields =
           match unknown_metadata with `Ignore -> declared_only schema fields | `Report -> fields
         in
         Payload_rules.read_metadata reader schema fields)
+      |> Result.map (fun fields -> Payload.Record fields)
     in
     let body_span = { tree.extent with start = tree.head.body_start } in
     let body =
       Action_rules.body actions context
-        ~source:{ Text.text; language = lang.language } body_span (expand tree.items)
+        ~source:{ Text.text; language = lang.language } body_span (nodes tree.items)
     in
-    match metadata, body with
-    | Ok fields, Ok body ->
-        Ok (Provenance.located ~span:tree.extent
-          { Observation.Source.id = tree.id.value;
-            title = slice tree.head.title;
-            metadata =
-              Provenance.located ?span:tree.head.metadata_span (Payload.Record fields);
-            body = Provenance.located ~span:body_span body })
-    | metadata, body ->
-        let errors = function Error e -> e | Ok _ -> [] in
-        Error (errors metadata @ errors body)
+    Provenance.located ~span:tree.extent
+      { Observation.Source.id = tree.id.value;
+        title = slice tree.head.title;
+        metadata = Provenance.located ?span:tree.head.metadata_span metadata;
+        body = Provenance.located ~span:body_span body }
   in
-  (* Contents are read in place: the text is padded so spans stay file offsets. *)
+  (* Contents are read in place: the text is padded so spans stay file offsets.
+     Diagnostics outside the card matter only when no card is found. *)
   let card (contents : Text.t Provenance.located) =
     let file, base =
       match contents.span with Some s -> s.file, s.start | None -> "", 0
     in
     let text = String.make base ' ' ^ contents.value.text in
     match parse ~file text (lang.read ~file text ~start:base) with
-    | Error _ as error -> error
-    | Ok [ tree ] -> Result.map (fun n -> n, tree.id) (note text tree)
-    | Ok [] -> Error [ invalid ?span:contents.span "these Contents declare no card" ]
-    | Ok _ -> Error [ invalid ?span:contents.span "these Contents declare more than one card" ]
+    | [ tree ], _ -> Ok (note text tree, tree.id)
+    | [], (_ :: _ as unowned) -> Error unowned
+    | [], [] -> Error [ invalid ?span:contents.span "these Contents declare no card" ]
+    | _ -> Error [ invalid ?span:contents.span "these Contents declare more than one card" ]
   in
   (* Every card a define call would produce, read from its Contents, deepest
-     included. The same reading backs [contents] during expansion. *)
+     included. The same reading backs [contents] during expansion, which
+     reports Contents that define no card; here they only contribute no ID. *)
   let rec declared (note : Syntax.raw_note Provenance.located) =
     let defined = function
-      | { Provenance.value = Observation.Source.Action (call : Invocation.t); _ }
+      | { Provenance.value = Observation.Source.Action (Ok (call : Invocation.t)); _ }
         when call.name.value = define ->
           List.filter_map (fun (field : Payload.field) ->
             match field.value.value with
@@ -245,19 +254,16 @@ let adapter lang ?(unknown_metadata = `Report) ~values ~identities ~actions ~def
       | _ -> []
     in
     List.concat_map defined note.value.body.value
-    |> List.map (fun contents ->
-         Result.bind (card contents) (fun (child, id) ->
-           Result.map (fun below -> id :: below) (declared child)))
-    |> collect |> Result.map List.concat
+    |> List.concat_map (fun contents ->
+         match card contents with
+         | Ok (child, id) -> id :: declared child
+         | Error _ -> [])
   in
   let extract (document : _ Syntax.document) =
     let text = lang.source document.native in
-    match parse ~file:document.file text (lang.scan ~file:document.file document.native) with
-    | Error _ as error -> error
-    | Ok roots ->
-        Result.bind (collect (List.map (note text) roots)) (fun notes ->
-          Result.map (fun declared -> { Syntax.notes; declared = List.concat declared })
-            (collect (List.map declared notes)))
+    let roots, diagnostics = parse ~file:document.file text (lang.scan ~file:document.file document.native) in
+    let notes = List.map (note text) roots in
+    { Syntax.notes; declared = List.concat_map declared notes; diagnostics }
   in
   { Syntax.language = lang.language; extract; contents = (fun c -> Result.map fst (card c)) }
 

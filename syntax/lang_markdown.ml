@@ -6,16 +6,21 @@ let language = Result.get_ok (Text.Language.of_string "markdown")
 
 type value = Value.t
 
+type metadata = {
+  fields : Value.field list;
+  diagnostics : Frontend.Diagnostic.t list;
+}
+
 type heading = {
   level : int;
   title : string Provenance.located;
-  metadata : Value.field list option;
+  metadata : metadata option;
 }
 
 type node =
   | Directive of {
       name : string Provenance.located;
-      arguments : Value.field list;
+      arguments : Value.field list Frontend.read;
       body : Text.t Provenance.located option;
       inner : node Provenance.located list;
     }
@@ -30,14 +35,18 @@ let identities =
   |> Identity_rules.register ~name:"meta-id" (fun (h : heading Provenance.located) ->
        match h.value.metadata with
        | None -> Rules.No_match
-       | Some fields ->
+       | Some { fields; diagnostics } ->
            match List.find_opt (fun ((k : string Provenance.located), _) -> k.value = "id") fields with
            | Some (_, { value = String s; span }) ->
                (match Graph.Vertex_id.of_string s with
                 | Ok id -> Rules.Matched (Provenance.located ?span id)
-                | Error message -> Rules.Invalid [ Card.invalid ?span message ])
-           | Some (_, v) -> Rules.Invalid [ Card.invalid ?span:v.span "id must be a quoted string" ]
-           | None -> Rules.Invalid [ Card.invalid ?span:h.span "zk-meta needs an id" ])
+                | Error message -> Rules.Invalid (Card.invalid ?span message :: diagnostics))
+           | Some (_, v) ->
+               Rules.Invalid (Card.invalid ?span:v.span "id must be a quoted string" :: diagnostics)
+           | None ->
+               match diagnostics with
+               | [] -> Rules.Invalid [ Card.invalid ?span:h.span "zk-meta needs an id" ]
+               | _ -> Rules.Invalid diagnostics)
 
 (* {1 Scanning} *)
 
@@ -116,12 +125,9 @@ let directive_end text from stop =
   in
   go from 0
 
-let toml ~file text start stop errors =
-  match Toml.parse ~file text ~start ~stop with
-  | Ok fields -> fields
-  | Error found -> errors := found @ !errors; []
+let toml ~file text start stop = Toml.parse ~file text ~start ~stop
 
-let rec region ~file ~headings ~errors text start stop =
+let rec region ~file ~headings text start stop =
   let heads = ref [] and nodes = ref [] in
   let rec go pos =
     if pos >= stop then ()
@@ -163,7 +169,8 @@ let rec region ~file ~headings ~errors text start stop =
       | Some (c, n, "zk-meta") ->
           let inner = next_line text m in
           let close, after = fence_close text (c, n) inner stop in
-          Some (toml ~file text inner close errors), Some (span file m (min stop (max close (line_end text close)))), after
+          let fields, diagnostics = Toml.parse_prefix ~file text ~start:inner ~stop:close in
+          Some { fields; diagnostics }, Some (span file m (min stop (max close (line_end text close)))), after
       | _ -> None, None, next_line text pos
     in
     let title = at file text !t0 !t1 in
@@ -171,7 +178,10 @@ let rec region ~file ~headings ~errors text start stop =
       { Card.level;
         identity = Provenance.located ~span:(span file pos e) { level; title; metadata };
         title = Option.get title.span;
-        metadata = Value.fields (Option.value metadata ~default:[]);
+        metadata = (match metadata with
+          | None -> Ok []
+          | Some { fields; diagnostics = [] } -> Ok (Value.fields fields)
+          | Some { diagnostics; _ } -> Error diagnostics);
         metadata_span; start = pos; body_start }
       :: !heads;
     body_start
@@ -184,8 +194,8 @@ let rec region ~file ~headings ~errors text start stop =
       | Some (c, n, info) when List.mem "zk-args" (String.split_on_char ' ' info) ->
           let inner = next_line text first in
           let fclose, after = fence_close text (c, n) inner close in
-          toml ~file text inner fclose errors, after
-      | _ -> [], next_line text pos
+          toml ~file text inner fclose, after
+      | _ -> Ok [], next_line text pos
     in
     let body_start = min body_start close in
     let body =
@@ -194,7 +204,7 @@ let rec region ~file ~headings ~errors text start stop =
         Some (Provenance.located ~span:(span file body_start close)
                 { Text.text = String.sub text body_start (close - body_start); language })
     in
-    let _, inner = region ~file ~headings:false ~errors text body_start close in
+    let _, inner = region ~file ~headings:false text body_start close in
     nodes :=
       Provenance.located ~span:(span file pos close_end)
         (Directive { name = at file text n0 n1; arguments; body; inner })
@@ -204,11 +214,8 @@ let rec region ~file ~headings ~errors text start stop =
   List.rev !heads, List.rev !nodes
 
 let scan ~file text ~start =
-  let errors = ref [] in
-  let headings, nodes = region ~file ~headings:true ~errors text start (String.length text) in
-  match !errors with
-  | [] -> Ok { Card.headings; nodes }
-  | errors -> Error (List.rev errors)
+  let headings, nodes = region ~file ~headings:true text start (String.length text) in
+  { Card.headings; nodes }
 
 let children = function Directive { inner; _ } -> inner | Card _ -> []
 
@@ -222,7 +229,7 @@ let actions =
              { Provenance.value = String.sub name.value 3 (String.length name.value - 3);
                span = Option.map (fun (s : Provenance.span) -> { s with start = s.start + 3 }) name.span }
            in
-           (match context.named ~name ?body (Value.fields arguments) with
+           (match Result.bind arguments (fun arguments -> context.named ~name ?body (Value.fields arguments)) with
             | Ok call ->
                 Rules.Matched
                   { Action_rules.call = Provenance.located ?span:node.span call; taken = node.span }
