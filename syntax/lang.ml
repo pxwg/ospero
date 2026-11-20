@@ -2,7 +2,7 @@
     metadata, named calls and values, and offers optional sugars bound to
     project actions through the rule tables. *)
 module Typst = struct end
-module Org = struct end
+module Org = Lang_org
 module Markdown = struct end
 
 (** The literal values shared by Typst and Markdown. *)
