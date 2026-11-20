@@ -17,9 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            ocaml: 4.13.1
-            dune: dune.3.5.0
+          - os: ubuntu-24.04
+            ocaml: 5.5.1
+            dune: dune.3.24.2
           - os: macos-latest
             ocaml: 5.5.1
             dune: dune
