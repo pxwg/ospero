@@ -273,7 +273,7 @@ let parse_contents config (contents : Text.t Provenance.located) =
 let parse_project config documents =
   let gather (notes, identities, diagnostics) document =
     let batch = extract config document in
-    let roots = List.map (fun note -> note.Provenance.value.Observation.Source.id) batch.notes in
+    let roots = List.map (fun note -> note.Provenance.value.Observation.Source.id.Provenance.value) batch.notes in
     let declared = List.map (fun id -> id.Provenance.value) batch.declared in
     List.rev_append batch.notes notes,
     List.rev_append declared (List.rev_append roots identities),

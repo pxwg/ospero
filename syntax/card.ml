@@ -221,7 +221,7 @@ let adapter lang ?(unknown_metadata = `Report) ~values ~identities ~actions ~def
         ~source:{ Text.text; language = lang.language } body_span (nodes tree.items)
     in
     Provenance.located ~span:tree.extent
-      { Observation.Source.id = tree.id.value;
+      { Observation.Source.id = tree.id;
         title = slice tree.head.title;
         metadata = Provenance.located ?span:tree.head.metadata_span metadata;
         body = Provenance.located ~span:body_span body }

@@ -4,7 +4,7 @@ module Source = struct
     | Action of 'action
 
   type ('metadata, 'action) note = {
-    id : Graph.Vertex_id.t;
+    id : Graph.Vertex_id.t Provenance.located;
     title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
     body : 'action content Provenance.located list Provenance.located;
@@ -25,6 +25,7 @@ type generation = {
 
 module Observed = struct
   type 'metadata note = {
+    id_span : Provenance.span option;
     title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
     generated_from : generation option;
@@ -38,7 +39,7 @@ end
 type ('metadata, 'relation, 'action, 'consumption, 'error) contribution =
   | Define of ('metadata, 'action) Source.note Provenance.located
   | Relate of {
-      target : Graph.Vertex_id.t;
+      target : Graph.Vertex_id.t Provenance.located;
       relation : 'relation;
     }
   | Emit of 'consumption Observed.content
@@ -49,9 +50,16 @@ type ('metadata, 'relation, 'action, 'consumption, 'error) interpreter =
   'action ->
   ('metadata, 'relation, 'action, 'consumption, 'error) contribution list
 
+type 'relation edge_declaration = {
+  edge : 'relation Graph.edge;
+  reference : int;
+  call : Provenance.span option;
+  target_span : Provenance.span option;
+}
+
 type ('metadata, 'relation, 'consumption) declarations = {
   vertices : 'metadata Observed.note Graph.vertex Provenance.located list;
-  edges : 'relation Graph.edge Provenance.located list;
+  edges : 'relation edge_declaration list;
   bodies :
     (Graph.Vertex_id.t *
      'consumption Observed.content Provenance.located list Provenance.located) list;
@@ -80,6 +88,21 @@ type ('relation, 'error) rejected_reference = {
   reasons : 'error failure list;
 }
 
+type 'error definition = {
+  id : Graph.Vertex_id.t Provenance.located;
+  title : Provenance.span option;
+  note : Provenance.span option;
+  rejected : 'error failure list;
+}
+
+type ('relation, 'error) reference = {
+  source : Graph.Vertex_id.t;
+  target : Graph.Vertex_id.t Provenance.located;
+  call : Provenance.span option;
+  edges : 'relation Graph.edge list;
+  rejected : 'error failure list;
+}
+
 module Vertex_set = Set.Make (Graph.Vertex_id)
 module Vertex_map = Map.Make (Graph.Vertex_id)
 module Edge_map = Map.Make (Graph.Edge_id)
@@ -97,6 +120,10 @@ type ('metadata, 'relation, 'consumption, 'error) t = {
   failures_by_vertex : 'error failure list Vertex_map.t;
   rejected_references : ('relation, 'error) rejected_reference list;
   rejected_by_source : ('relation, 'error) rejected_reference list Vertex_map.t;
+  definitions : 'error definition list;
+  definitions_by_id : 'error definition list Vertex_map.t;
+  references : ('relation, 'error) reference list;
+  references_by_target : ('relation, 'error) reference list Vertex_map.t;
 }
 
 type ('relation, 'error) outgoing = {
@@ -116,6 +143,13 @@ let unresolved_references result =
   List.map (fun reference -> reference.declaration) (rejected_references result)
 
 let graph result = result.graph
+
+let all_definitions result = result.definitions
+let definitions result id =
+  Vertex_map.find_opt id result.definitions_by_id |> Option.value ~default:[]
+let references result = result.references
+let references_to result id =
+  Vertex_map.find_opt id result.references_by_target |> Option.value ~default:[]
 
 let outgoing result id =
   Option.map (fun resolved ->
@@ -139,6 +173,9 @@ let metadata_source result id = Vertex_map.find_opt id result.metadata_sources
 let title_source result id = Vertex_map.find_opt id result.title_sources
 let note_source result id = Vertex_map.find_opt id result.note_sources
 
+(* Report at the most specific known location. *)
+let at_id specific fallback = match specific with Some _ -> specific | None -> fallback
+
 let expand ?(metadata_errors = fun _ -> []) ~interpret project =
   let identities = Vertex_set.of_list project.identities in
   let definitions = ref Vertex_set.empty in
@@ -148,59 +185,74 @@ let expand ?(metadata_errors = fun _ -> []) ~interpret project =
   let report span issue = issues := Provenance.located ?span issue :: !issues in
   let vertices = ref [] in
   let edges = ref [] in
+  let reference_count = ref 0 in
   let bodies = ref [] in
   let register generated_from (located : (_, _) Source.note Provenance.located) =
     let note = located.value in
     List.iter
-      (fun error -> report note.metadata.span (Metadata_error (note.id, error)))
+      (fun error -> report note.metadata.span (Metadata_error (note.id.value, error)))
       (metadata_errors note.metadata.value);
-    if not (Vertex_set.mem note.id identities) then
-      report located.span (Unregistered_definition note.id)
+    let id = note.id.value in
+    if not (Vertex_set.mem id identities) then
+      report (at_id note.id.span located.span) (Unregistered_definition id)
     else begin
       let vertex =
-        { Graph.id = note.id;
-          note = { Observed.title = note.title; metadata = note.metadata; generated_from } }
+        { Graph.id;
+          note = { Observed.id_span = note.id.span; title = note.title;
+                   metadata = note.metadata; generated_from } }
       in
       vertices := { located with value = vertex } :: !vertices;
-      if Vertex_set.mem note.id !definitions then
-        ambiguous := Vertex_set.add note.id !ambiguous
+      if Vertex_set.mem id !definitions then
+        ambiguous := Vertex_set.add id !ambiguous
       else begin
-        definitions := Vertex_set.add note.id !definitions;
+        definitions := Vertex_set.add id !definitions;
         Queue.add note pending
       end
     end
   in
   List.iter (register None) project.notes;
   let observe_body (note : (_, _) Source.note) =
+    let source = note.id.value in
     let contents = ref [] in
     let edge_index = ref 0 in
     let emit span content =
       contents := Provenance.located ?span content :: !contents
     in
-    let contribute span = function
+    (* [arguments] holds the references already opened by the current action. *)
+    let contribute span arguments = function
       | Define definition ->
-          register (Some { source = note.id; action = span }) definition
+          register (Some { source; action = span }) definition
       | Relate { target; relation } ->
-          let id = Observation_edge_id.make ~source:note.id ~index:!edge_index in
+          let id = Observation_edge_id.make ~source ~index:!edge_index in
           incr edge_index;
-          edges := Provenance.located ?span
-            { Graph.id; source = note.id; target; relation } :: !edges
+          let key = target.value, target.span in
+          let reference = match List.assoc_opt key !arguments with
+            | Some reference -> reference
+            | None ->
+                let reference = !reference_count in
+                incr reference_count;
+                arguments := (key, reference) :: !arguments;
+                reference
+          in
+          edges := { edge = { Graph.id; source; target = target.value; relation };
+                     reference; call = span; target_span = target.span } :: !edges
       | Emit content -> emit span content
-      | Fail error -> report span (Action_error (note.id, error))
+      | Fail error -> report span (Action_error (source, error))
     in
     List.iter
       (fun (content : _ Provenance.located) ->
         match content.value with
         | Source.Text text -> emit content.span (Observed.Text text)
-        | Source.Action action -> List.iter (contribute content.span) (interpret action))
+        | Source.Action action ->
+            List.iter (contribute content.span (ref [])) (interpret action))
       note.body.value;
-    bodies := (note.id, { note.body with value = List.rev !contents }) :: !bodies
+    bodies := (source, { note.body with value = List.rev !contents }) :: !bodies
   in
   (* Initial notes run first; generated definitions join the FIFO queue.
      Assembly also rejects contributions from definitions found ambiguous later. *)
   while not (Queue.is_empty pending) do
     let note = Queue.take pending in
-    if not (Vertex_set.mem note.id !ambiguous) then observe_body note
+    if not (Vertex_set.mem note.id.value !ambiguous) then observe_body note
   done;
   { vertices = List.rev !vertices; edges = List.rev !edges; bodies = List.rev !bodies },
   List.rev !issues
@@ -283,35 +335,83 @@ let assemble ?(issues = []) (declarations : (_, _, _) declarations) =
   in
   let rejected = reject Vertex_set.empty (Vertex_set.elements duplicates @ unavailable_generators) in
   let available id = Vertex_map.mem id vertex_index && not (Vertex_set.mem id rejected) in
-  let vertices = List.filter (fun (located : _ Graph.vertex Provenance.located) ->
+  let candidates = List.map (fun (located : _ Graph.vertex Provenance.located) ->
     let vertex = located.value in
-    if Vertex_set.mem vertex.Graph.id duplicates then begin
-      report located.span (Duplicate_definition vertex.id);
-      false
-    end else match vertex.note.Observed.generated_from with
-      | Some { source; _ } when not (available source) ->
-          report located.span (Unavailable_generator (vertex.id, source));
-          false
-      | _ -> true) declarations.vertices
+    let note = vertex.note in
+    let span = at_id note.Observed.id_span located.span in
+    let rejected =
+      if Vertex_set.mem vertex.Graph.id duplicates then
+        [ record span (Duplicate_definition vertex.id) ]
+      else match note.generated_from with
+        | Some { source; _ } when not (available source) ->
+            [ record span (Unavailable_generator (vertex.id, source)) ]
+        | _ -> []
+    in
+    located,
+    { id = Provenance.located ?span:note.id_span vertex.id; title = note.title.span;
+      note = located.span; rejected }) declarations.vertices
   in
-  let edge_counts = List.fold_left (fun counts (located : _ Provenance.located) ->
-    Edge_map.update located.value.Graph.id
+  let vertices = List.filter_map (fun (located, (definition : _ definition)) ->
+    match definition.rejected with [] -> Some located | _ -> None) candidates in
+  let definitions = List.map snd candidates in
+  let edge_counts = List.fold_left (fun counts (declared : _ edge_declaration) ->
+    Edge_map.update declared.edge.Graph.id
       (fun count -> Some (1 + Option.value count ~default:0)) counts)
     Edge_map.empty declarations.edges
   in
-  let edges, rejected_references = List.partition_map (fun (located : _ Provenance.located) ->
-    let edge : _ Graph.edge = located.value in
-    let reasons =
-      [ Edge_map.find edge.id edge_counts <> 1, Graph.Duplicate_edge edge.id;
-        not (available edge.source), Graph.Missing_endpoint (edge.id, Source, edge.source);
-        not (available edge.target), Graph.Missing_endpoint (edge.id, Target, edge.target) ]
-      |> List.filter_map (fun (failed, problem) ->
-        if failed then Some (record located.span (Reference_error { source = edge.source; problem }))
-        else None)
+  let reference_error span (edge : _ Graph.edge) problem =
+    record span (Reference_error { source = edge.source; problem })
+  in
+  (* Endpoints are shared by the edges of a reference, so their failures are
+     recorded once, at its first edge; duplicate identities stay per edge. *)
+  let endpoint_failures = Hashtbl.create 16 in
+  let checked = List.map (fun (declared : _ edge_declaration) ->
+    let edge = declared.edge in
+    let duplicate =
+      if Edge_map.find edge.id edge_counts = 1 then []
+      else [ reference_error declared.call edge (Graph.Duplicate_edge edge.id) ]
     in
+    let endpoints = match Hashtbl.find_opt endpoint_failures declared.reference with
+      | Some failures -> failures
+      | None ->
+          let failures =
+            (if available edge.source then []
+             else [ reference_error declared.call edge
+                      (Graph.Missing_endpoint (edge.id, Source, edge.source)) ])
+            @ (if available edge.target then []
+               else [ reference_error (at_id declared.target_span declared.call) edge
+                        (Graph.Missing_endpoint (edge.id, Target, edge.target)) ])
+          in
+          Hashtbl.add endpoint_failures declared.reference failures;
+          failures
+    in
+    declared, duplicate @ endpoints) declarations.edges
+  in
+  let edges, rejected_references = List.partition_map (fun ((declared : _ edge_declaration), reasons) ->
+    let located = Provenance.located ?span:declared.call declared.edge in
     match reasons with
     | [] -> Either.Left located
-    | _ -> Either.Right { declaration = located; reasons }) declarations.edges
+    | _ -> Either.Right { declaration = located; reasons }) checked
+  in
+  (* Edges contributed by one target argument form one source reference. *)
+  let references =
+    let module Int_map = Map.Make (Int) in
+    (* Edges and their failures accumulate in reverse; shared endpoint
+       failures recur in every edge of a reference and are kept once. *)
+    let groups = List.fold_left (fun groups ((declared : _ edge_declaration), reasons) ->
+      Int_map.update declared.reference (fun group ->
+        let first, edges, rejected = Option.value group ~default:(declared, [], []) in
+        Some (first, declared.edge :: edges, List.rev_append reasons rejected))
+        groups) Int_map.empty checked
+    in
+    let once records = List.fold_left (fun kept record ->
+      if List.exists (fun r -> Failure.compare r.Failure.id record.Failure.id = 0) kept then kept
+      else record :: kept) [] records |> List.rev in
+    (* Ordinals follow the first edge of each reference, hence declaration order. *)
+    Int_map.bindings groups |> List.map (fun (_, ((first : _ edge_declaration), edges, rejected)) ->
+      { source = first.edge.Graph.source;
+        target = Provenance.located ?span:first.target_span first.edge.target;
+        call = first.call; edges = List.rev edges; rejected = once (List.rev rejected) })
   in
   let body_index = List.fold_left (fun index (id, (contents : _ Provenance.located)) ->
     if available id then
@@ -355,8 +455,14 @@ let assemble ?(issues = []) (declarations : (_, _, _) declarations) =
     Vertex_map.update reference.declaration.value.Graph.source
       (fun group -> Some (reference :: Option.value group ~default:[])) index)
     rejected_references Vertex_map.empty in
+  let group key items = List.fold_right (fun item index ->
+    Vertex_map.update (key item) (fun group -> Some (item :: Option.value group ~default:[])) index)
+    items Vertex_map.empty in
   { graph; bodies; edge_sources; failures; failures_by_vertex;
     rejected_references; rejected_by_source;
+    definitions; definitions_by_id = group (fun (d : _ definition) -> d.id.value) definitions;
+    references;
+    references_by_target = group (fun (r : _ reference) -> r.target.value) references;
     note_sources = index_vertex (fun located -> located.span);
     title_sources = index_vertex (fun located -> located.value.note.Observed.title.span);
     metadata_sources = index_vertex (fun located -> located.value.note.Observed.metadata.span);

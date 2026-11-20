@@ -10,7 +10,8 @@ module Source : sig
       of the text or action value. The outer body wrapper locates the whole
       container, including an explicitly empty body. *)
   type ('metadata, 'action) note = {
-    id : Graph.Vertex_id.t;
+    id : Graph.Vertex_id.t Provenance.located;
+        (** The span covers the ID as written, such as a label or property. *)
     title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
         (** The optional span covers the original metadata as a whole,
@@ -39,6 +40,7 @@ module Observed : sig
   (** Note fields retain direct source locations until assembly separates
       semantic values from the observation's source registry. *)
   type 'metadata note = {
+    id_span : Provenance.span option;
     title : Text.t Provenance.located;
     metadata : 'metadata Provenance.located;
     generated_from : generation option;
@@ -61,11 +63,14 @@ type ('metadata, 'relation, 'action, 'consumption, 'error) contribution =
           Duplicate definitions are conflicts. The wrapper records the direct
           definition span, not the generating action's span. *)
   | Relate of {
-      target : Graph.Vertex_id.t;
+      target : Graph.Vertex_id.t Provenance.located;
       relation : 'relation;
     }
-      (** Contribute an edge from the current note to the target.
-          Each occurrence receives an ID from its source and local index. *)
+      (** Contribute an edge from the current note to the target. The span
+          locates the target argument within the action. Each occurrence
+          receives an ID from its source and local index. Contributions of
+          one action that name the same target at the same span form one
+          source reference, as when an argument yields several relations. *)
   | Emit of 'consumption Observed.content
       (** Append action-free content to the current note's observed body. *)
 
@@ -79,19 +84,31 @@ type ('metadata, 'relation, 'action, 'consumption, 'error) interpreter =
   'action ->
   ('metadata, 'relation, 'action, 'consumption, 'error) contribution list
 
+(** A declared edge with the whole action and the target argument located. *)
+type 'relation edge_declaration = {
+  edge : 'relation Graph.edge;
+  reference : int;
+      (** The ordinal of its source reference in the expansion, shared by
+          every edge of that reference. *)
+  call : Provenance.span option;
+  target_span : Provenance.span option;
+}
+
 (** Expanded graph and body declarations, awaiting assembly.
     Lists preserve declaration order and duplicate entries for validation.
     Vertex title and metadata retain their direct source spans until assembly
     separates semantic values from the source registry. *)
 type ('metadata, 'relation, 'consumption) declarations = {
   vertices : 'metadata Observed.note Graph.vertex Provenance.located list;
-  edges : 'relation Graph.edge Provenance.located list;
+  edges : 'relation edge_declaration list;
   bodies :
     (Graph.Vertex_id.t *
      'consumption Observed.content Provenance.located list Provenance.located) list;
 }
 
-(** Failed contributions retain the source span of the affected occurrence. *)
+(** Failed contributions retain the source span of the offending occurrence:
+    the ID of a rejected definition, the target argument of an unresolved
+    target, otherwise the affected construct. *)
 type 'error issue =
   | Unregistered_definition of Graph.Vertex_id.t
   | Duplicate_definition of Graph.Vertex_id.t
@@ -127,6 +144,28 @@ val expand :
 
 (** The assembled graph and the contributions that could not be resolved. *)
 type ('metadata, 'relation, 'consumption, 'error) t
+
+(** A definition candidate of an identity, whether or not it resolved. *)
+type 'error definition = {
+  id : Graph.Vertex_id.t Provenance.located;
+  title : Provenance.span option;
+  note : Provenance.span option;
+  rejected : 'error failure list;
+      (** Why this candidate was rejected; empty for the resolved definition. *)
+}
+
+(** One source occurrence of a target argument. Several edges contributed by
+    the same argument share it. *)
+type ('relation, 'error) reference = {
+  source : Graph.Vertex_id.t;
+  target : Graph.Vertex_id.t Provenance.located;
+      (** The span locates the target argument. *)
+  call : Provenance.span option;
+  edges : 'relation Graph.edge list;
+  rejected : 'error failure list;
+      (** Failures of its edges, each recorded once for the reference;
+          empty when every edge resolved. *)
+}
 
 (** Keep uniquely defined vertices and uniquely identified edges with valid
     endpoints. Reject every candidate for an ambiguous identity. Keep all
@@ -177,6 +216,26 @@ val metadata :
 val rejected_references :
   ('metadata, 'relation, 'consumption, 'error) t ->
   ('relation, 'error) rejected_reference list
+
+(** Every definition candidate of a registered identity, in declaration order,
+    including duplicates and candidates under an unavailable generator.
+    Unregistered definitions are reported as issues only. *)
+val definitions :
+  ('metadata, 'relation, 'consumption, 'error) t -> Graph.Vertex_id.t ->
+  'error definition list
+
+(** Every definition candidate, in declaration order. *)
+val all_definitions :
+  ('metadata, 'relation, 'consumption, 'error) t -> 'error definition list
+
+(** Every source reference in declaration order, resolved or not. *)
+val references :
+  ('metadata, 'relation, 'consumption, 'error) t -> ('relation, 'error) reference list
+
+(** The source references naming this target, including dangling ones. *)
+val references_to :
+  ('metadata, 'relation, 'consumption, 'error) t -> Graph.Vertex_id.t ->
+  ('relation, 'error) reference list
 
 type ('relation, 'error) outgoing = {
   resolved : 'relation Graph.edge list;
