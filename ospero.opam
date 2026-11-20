@@ -1,0 +1,22 @@
+opam-version: "2.0"
+version: "0.1.0"
+synopsis: "Knowledge graphs, observations and policy evaluation for Ospero"
+description: """
+An OCaml library for knowledge graphs.
+"""
+maintainer: "Xinyu Xiang <xiangxy23@mails.tsinghua.edu.cn>"
+authors: "Xinyu Xiang"
+license: "MIT"
+homepage: "https://github.com/pxwg/ospero"
+bug-reports: "https://github.com/pxwg/ospero/issues"
+dev-repo: "git+https://github.com/pxwg/ospero.git"
+depends: [
+  "ocaml" {>= "4.13.1"}
+  "dune" {>= "3.5"}
+]
+build: [
+  ["dune" "build" "--only-packages" name "--profile" "release" "-j" jobs "@install"]
+]
+install: [
+  ["dune" "install" "--prefix" prefix "--libdir" lib name]
+]

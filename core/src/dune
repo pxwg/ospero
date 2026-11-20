@@ -1,6 +1,6 @@
 (dirs :standard \ dsl)
 
 (library
- (name ospero_core)
- (public_name ospero-core)
+ (name ospero_kernel)
+ (package ospero)
  (private_modules observation_edge_id))

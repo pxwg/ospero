@@ -1,0 +1,4 @@
+(library
+ (name ospero)
+ (public_name ospero)
+ (libraries ospero_kernel ospero_syntax))
