@@ -17,7 +17,7 @@ type issue =
   | Cyclic_dependencies of Id.t list
 
 type ('vertex, 'edge, 'issue) compiled = {
-  initial : ('vertex, 'edge) Graph.t;
+  start : unit -> ('vertex, 'edge, 'issue) Policy.outcome;
   morphism : ('vertex, 'edge, 'issue) Policy.outcome Clone.morphism;
   outputs : Id.t list;
 }
@@ -34,7 +34,7 @@ let validate input calls =
   let issues =
     List.fold_left
       (fun issues (call : _ Policy.invocation) ->
-        let expected = call.definition.arity in
+        let expected = Policy.arity call.definition in
         let actual = List.length call.inputs in
         let issues =
           if expected = actual then issues
@@ -49,13 +49,13 @@ let validate input calls =
   in
   List.rev issues
 
-let compile ~initial ~input calls =
+let compile_state ~initial ~start ~input calls =
   match validate input calls with
   | _ :: _ as issues -> Error issues
   | [] ->
       let rec compose_layers slots outputs morphism pending =
         match pending with
-        | [] -> Ok { initial; morphism; outputs }
+        | [] -> Ok { start; morphism; outputs }
         | _ ->
             let ready, waiting =
               List.partition
@@ -105,6 +105,24 @@ let compile ~initial ~input calls =
       in
       compose_layers (Id_map.singleton input 0) [input] (Clone.identity 1) calls
 
+let compile ~initial ~input calls =
+  compile_state ~initial ~start:(fun () -> Policy.initial initial) ~input calls
+
+let compile_observation ~observation ~input ~calls =
+  let initial = Observation.graph observation in
+  let observation_causes product card =
+    Observation.failures_for_product observation product card
+    |> List.map (fun record -> record.Failure.id)
+  in
+  let start () = Policy.initial ~observation_causes initial in
+  compile_state ~initial ~start ~input (calls observation)
+
 let evaluate compiled =
-  Clone.apply compiled.morphism [Policy.Success compiled.initial]
+  Clone.apply compiled.morphism [compiled.start ()]
   |> List.combine compiled.outputs
+
+let run_observation ~syntax ~observation ~input ~calls =
+  Result.map (fun compiled ->
+    let outcomes = evaluate compiled in
+    outcomes, Policy_report.of_evaluation ~syntax ~observation ~outcomes)
+    (compile_observation ~observation ~input ~calls)
