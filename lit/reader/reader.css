@@ -1,0 +1,126 @@
+:root {
+  --zk-pane: min(625px, 100vw);
+  --zk-spine: 40px;
+  --zk-preview-width: 26rem;                        /* measure of hover previews */
+  --zk-bar: 2.6rem;
+  --zk-ink: #111;
+  --zk-muted: #808080;
+  --zk-rule: rgba(0, 0, 0, 0.09);
+  --zk-tint: rgba(0, 100, 255, 0.04);
+  --zk-hover: rgba(0, 100, 255, 0.1);
+  --zk-paper: #fff;
+  --zk-desk: #fafafc;
+}
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--zk-ink);
+  background: var(--zk-desk);
+  font-family: "Inria Sans", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+}
+
+/* ---- Bar ---------------------------------------------------------------- */
+
+.zk-bar {
+  flex: none;
+  min-height: 44px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  background: var(--zk-paper);
+  border-bottom: 1px solid #dadada;
+  z-index: 5;
+}
+
+/* ---- Stack (after notes.andymatuschak.org) ------------------------------ */
+
+.zk-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+/* Panes stick at `i × spine` on the left and, when scrolled back, pile up as
+   spines on the right: pane i keeps `(n − i) × spine` of the right edge. */
+.zk-pane {
+  position: sticky;
+  left: calc(var(--i, 0) * var(--zk-spine));
+  right: calc((var(--n, 1) - var(--i, 0)) * var(--zk-spine) - var(--zk-pane));
+  flex: 0 0 var(--zk-pane);
+  height: 100%;
+  overflow-y: auto;
+  background: var(--zk-paper);
+  border-left: 1px solid rgba(0, 0, 0, 0.05);
+  transition: box-shadow 100ms linear, opacity 75ms linear,
+    transform 200ms cubic-bezier(0.19, 1, 0.22, 1);
+}
+.zk-pane:first-child { border-left: 0; }
+.zk-pane.is-overlay { box-shadow: 0 0 15px 3px rgba(0, 0, 0, 0.1); }
+.zk-pane.is-hidden { opacity: 0; transform: scale(0.95); pointer-events: none; }
+.zk-pane > article { padding: 32px 36px 5rem; transition: opacity 150ms linear; }
+.zk-pane.is-obscured > article { opacity: 0; pointer-events: none; }
+
+/* A covered pane shows only its title, set vertically in the spine. */
+.zk-spine {
+  position: sticky;
+  top: 0;
+  float: left;
+  z-index: 2;
+  width: var(--zk-spine);
+  height: 100%;
+  margin-right: calc(-1 * var(--zk-spine));
+  padding: 36px 0 0;
+  border: 0;
+  background: transparent;
+  color: #333;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Noto Sans CJK SC", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: var(--zk-spine);
+  letter-spacing: 0.03em;
+  writing-mode: vertical-lr;
+  text-align: start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms linear, color 100ms linear;
+}
+.zk-pane.is-obscured > .zk-spine { opacity: 1; pointer-events: auto; }
+.zk-spine:hover, .zk-pane.is-destination > .zk-spine { color: rgba(10, 132, 255, 1); }
+
+@media (max-width: 800px) {
+  body { display: block; height: auto; background: var(--zk-paper); }
+  .zk-bar { padding: 0 16px; }
+  .zk-stack { display: block; overflow: visible; }
+  .zk-pane { position: static; height: auto; overflow: visible; border: 0; }
+  .zk-pane:not(:last-child), .zk-spine { display: none !important; }
+  .zk-pane > article { padding: 16px 16px 3rem; }
+}
+* { box-sizing: border-box; }
+.zk-bar { justify-content: flex-start; gap: 1.25rem; color: #666; font-size: .88rem; }
+.zk-bar a { font: 700 1.25rem Georgia, serif; color: #222; text-decoration: none; }
+article { line-height: 1.82; overflow-wrap: anywhere; }
+h1, h2 { font-family: Georgia, "Songti SC", serif; line-height: 1.4; }
+h1 { margin: .4rem 0 1.4rem; font-size: 2.1rem; }
+h2 { margin: 2.5rem 0 .75rem; font-size: 1.35rem; }
+a { color: #295a78; text-underline-offset: .2em; }
+summary { cursor: pointer; }
+.tree { border-left: 2px solid #bac7cb; background: #f7f8f7; padding: .65rem 1rem; margin: 1.25rem 0; }
+.tree > summary { font-weight: 600; }
+.code { margin: .55rem 0; }
+.code > summary, code, pre { font: .87em/1.55 "IBM Plex Mono", Menlo, monospace; }
+pre { padding: .8rem; background: #f5f5f3; overflow: auto; }
+@media (max-width: 800px) { .zk-pane.is-obscured > article { opacity: 1; pointer-events: auto; } }
