@@ -1,0 +1,79 @@
+* policy_wiring.mli
+:PROPERTIES:
+:ID: core/src/policy_wiring.mli
+:END:
+
+#+begin_src ocaml :id source-core-src-policy-wiring-mli
+(** Compile named policy calls into a single result-space morphism. *)
+
+type issue =
+  | Duplicate_identity of Policy.Invocation_id.t
+  | Port_count_mismatch of {
+      invocation : Policy.Invocation_id.t;
+      expected : int;
+      actual : int;
+    }
+  | Missing_input of {
+      invocation : Policy.Invocation_id.t;
+      port : int;
+      source : Policy.Invocation_id.t;
+    }
+  | Cyclic_dependencies of Policy.Invocation_id.t list
+      (** Unresolved calls, including descendants waiting on cycles. *)
+
+(** A compiled morphism bound to its initial state.
+    The morphism is hidden so callers cannot substitute an external graph. *)
+type ('vertex, 'edge, 'issue) compiled
+
+(** Compile without executing policy callbacks or assignment providers.
+    [input] names the single external input and shares the calls' namespace.
+    Forward references, repeated ports, zero-input calls and unused results
+    are allowed. All calls are included, not just ancestors of a final output.
+
+    Compilation captures [initial] as the sole external input and fixes
+    the topology used to materialize every policy output.
+    With no calls the morphism is identity on the initial result.
+    Structural errors return no partial compilation. *)
+val compile :
+  initial:('vertex, 'edge) Graph.t ->
+  input:Policy.Invocation_id.t ->
+  ('vertex, 'edge, 'issue) Policy.invocation list ->
+  (('vertex, 'edge, 'issue) compiled, issue list) result
+
+(** Bind policy definitions to the observation that supplies the initial graph.
+    The observation retains source declarations and full diagnostics. The initial
+    state port exposes IDs for source product failures, and later state ports
+    expose availability and IDs for computed products. Local observation
+    failures leave the initial state available. *)
+val compile_observation :
+  observation:('metadata, 'relation, 'consumption, 'error) Observation.t ->
+  input:Policy.Invocation_id.t ->
+  calls:(('metadata, 'relation, 'consumption, 'error) Observation.t ->
+    ('metadata Graph.note, 'relation, 'issue) Policy.invocation list) ->
+  (('metadata Graph.note, 'relation, 'issue) compiled, issue list) result
+
+(** Evaluate on the captured initial state and associate results with identities.
+    The initial input comes first, followed by dependency layers, each ordered
+    by invocation identity. Each call is evaluated once per evaluation;
+    separate evaluations rerun the computation. Each outcome contains its own
+    policy records. Callback exceptions propagate. *)
+val evaluate :
+  ('vertex, 'edge, 'issue) compiled ->
+  (Policy.Invocation_id.t * ('vertex, 'edge, 'issue) Policy.outcome) list
+
+(** Compile and evaluate once, then collect the terminal report from the
+    syntax diagnostics, the same observation and every outcome, including
+    independent and failed calls. *)
+val run_observation :
+  syntax:Frontend.Diagnostic.t list ->
+  observation:('metadata, 'relation, 'consumption, 'error) Observation.t ->
+  input:Policy.Invocation_id.t ->
+  calls:(('metadata, 'relation, 'consumption, 'error) Observation.t ->
+    ('metadata Graph.note, 'relation, 'issue) Policy.invocation list) ->
+  ((Policy.Invocation_id.t * ('metadata Graph.note, 'relation, 'issue) Policy.outcome) list *
+    ('error, 'issue) Policy_report.t, issue list) result
+#+end_src
+
+#+begin_src ocaml :id file-core-src-policy-wiring-mli :target-file core/src/policy_wiring.mli :zk-noweb yes
+<<source-core-src-policy-wiring-mli>>
+#+end_src

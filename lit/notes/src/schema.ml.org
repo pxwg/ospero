@@ -1,0 +1,209 @@
+* schema.ml
+:PROPERTIES:
+:ID: core/src/schema.ml
+:END:
+
+#+begin_src ocaml :id source-core-src-schema-ml
+open Frontend
+
+type shape =
+  | String of { choices : string list }
+  | Bool
+  | Int
+  | Contents
+  | List of shape
+  | Record of field list
+
+and field = {
+  name : string;
+  shape : shape;
+  required : bool;
+}
+
+type 'a t = {
+  description : shape;
+  run : Payload.t -> ('a, Diagnostic.t list) result;
+}
+
+type 'a fields = {
+  declared : field list;
+  read :
+    Provenance.span option -> Payload.field list ->
+    ('a, Diagnostic.t list) result;
+}
+
+let describe schema = schema.description
+let decode schema = schema.run
+
+let fail ?span problem = Error [ Diagnostic.make ?span problem ]
+
+let within segment =
+  List.map (fun (d : Diagnostic.t) -> { d with path = segment :: d.path })
+
+let both a b =
+  match a, b with
+  | Ok a, Ok b -> Ok (a, b)
+  | Error a, Error b -> Error (a @ b)
+  | Error errors, Ok _ | Ok _, Error errors -> Error errors
+
+let mismatch expected (v : Payload.t) =
+  fail ?span:v.span
+    (Diagnostic.Type_mismatch
+       { expected; given = Payload.Kind.of_value v.value })
+
+let string =
+  { description = String { choices = [] };
+    run = (fun (v : Payload.t) ->
+      match v.value with
+      | Payload.String s -> Ok s
+      | _ -> mismatch Payload.Kind.String v) }
+
+let bool =
+  { description = Bool;
+    run = (fun (v : Payload.t) ->
+      match v.value with
+      | Payload.Bool b -> Ok b
+      | _ -> mismatch Payload.Kind.Bool v) }
+
+let int =
+  { description = Int;
+    run = (fun (v : Payload.t) ->
+      match v.value with
+      | Payload.Int n -> Ok n
+      | _ -> mismatch Payload.Kind.Int v) }
+
+let contents =
+  { description = Contents;
+    run = (fun (v : Payload.t) ->
+      match v.value with
+      | Payload.Contents text -> Ok (Provenance.located ?span:v.span text)
+      | _ -> mismatch Payload.Kind.Contents v) }
+
+let list schema =
+  { description = List schema.description;
+    run = (fun (v : Payload.t) ->
+      match v.value with
+      | Payload.List items ->
+          let results =
+            List.mapi
+              (fun index item ->
+                Result.map_error (within (Diagnostic.Index index))
+                  (schema.run item))
+              items
+          in
+          List.fold_right
+            (fun result rest ->
+              Result.map (fun (x, xs) -> x :: xs) (both result rest))
+            results (Ok [])
+      | _ -> mismatch Payload.Kind.List v) }
+
+let choice choices =
+  let names = List.map fst choices in
+  { description = String { choices = names };
+    run = (fun (v : Payload.t) ->
+      match v.value with
+      | Payload.String given -> (
+          match List.assoc_opt given choices with
+          | Some value -> Ok value
+          | None ->
+              fail ?span:v.span
+                (Diagnostic.Invalid_choice { given; choices = names }))
+      | _ -> mismatch Payload.Kind.String v) }
+
+(* Retain the span without changing the description seen by Syntax. *)
+let located schema =
+  { schema with run = (fun input ->
+      Result.map (fun value -> { input with Provenance.value }) (schema.run input)) }
+
+let map f schema =
+  { schema with run = (fun v -> Result.map f (schema.run v)) }
+
+let refine f schema =
+  { schema with run = (fun (v : Payload.t) ->
+      Result.bind (schema.run v) (fun decoded ->
+        match f decoded with
+        | Ok value -> Ok value
+        | Error message -> fail ?span:v.span (Diagnostic.Invalid message))) }
+
+let lookup name =
+  List.find_opt (fun (f : Payload.field) -> f.name.value = name)
+
+let field name required schema ~absent ~present =
+  { declared = [ { name; shape = schema.description; required } ];
+    read = (fun span fields ->
+      match lookup name fields with
+      | None -> absent span
+      | Some (f : Payload.field) ->
+          Result.map present
+            (Result.map_error (within (Diagnostic.Field name))
+               (schema.run f.value))) }
+
+let required name schema =
+  field name true schema ~present:Fun.id
+    ~absent:(fun span -> fail ?span (Diagnostic.Missing_field name))
+
+let optional name schema ~default =
+  field name false schema ~present:Fun.id ~absent:(fun _ -> Ok default)
+
+let option name schema =
+  field name false schema ~present:Option.some ~absent:(fun _ -> Ok None)
+
+let no_fields = { declared = []; read = (fun _ _ -> Ok ()) }
+
+let ( let+ ) fields f =
+  { fields with read = (fun span given -> Result.map f (fields.read span given)) }
+
+let ( and+ ) a b =
+  { declared = a.declared @ b.declared;
+    read = (fun span given -> both (a.read span given) (b.read span given)) }
+
+let record fields =
+  let known = List.map (fun (f : field) -> f.name) fields.declared in
+  { description = Record fields.declared;
+    run = (fun (v : Payload.t) ->
+      match v.value with
+      | Payload.Record given ->
+          let rec check seen = function
+            | [] -> []
+            | (f : Payload.field) :: rest ->
+                let name = f.name.value in
+                let problem =
+                  if not (List.mem name known) then
+                    Some (Diagnostic.Unknown_field { name; known })
+                  else if List.mem name seen then
+                    Some (Diagnostic.Duplicate_field name)
+                  else None
+                in
+                List.map (Diagnostic.make ?span:f.name.span)
+                  (Option.to_list problem)
+                @ check (name :: seen) rest
+          in
+          (match check [] given, fields.read v.span given with
+           | [], result -> result
+           | errors, Ok _ -> Error errors
+           | errors, Error more -> Error (errors @ more))
+      | _ -> mismatch Payload.Kind.Record v) }
+
+(* Let callers keep the fields and their source positions for further decoding. *)
+let record_payload =
+  { description = Record [];
+    run = (fun payload ->
+      match payload.value with
+      | Payload.Record fields -> Ok fields
+      | _ -> mismatch Payload.Kind.Record payload) }
+
+let actions schemas (invocation : Invocation.t) =
+  match List.assoc_opt invocation.name.value schemas with
+  | Some schema ->
+      schema.run
+        (Provenance.located ?span:invocation.name.span
+           (Payload.Record invocation.arguments))
+  | None ->
+      fail ?span:invocation.name.span
+        (Diagnostic.Unknown_action
+           { name = invocation.name.value; known = List.map fst schemas })
+#+end_src
+
+#+begin_src ocaml :id file-core-src-schema-ml :target-file core/src/schema.ml :zk-noweb yes
+<<source-core-src-schema-ml>>
+#+end_src

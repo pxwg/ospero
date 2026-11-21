@@ -1,0 +1,15 @@
+* dune
+:PROPERTIES:
+:ID: syntax/dune
+:END:
+
+#+begin_src dune :id source-syntax-dune
+(library
+ (name ospero_syntax)
+ (package ospero)
+ (libraries ospero_kernel))
+#+end_src
+
+#+begin_src dune :id file-syntax-dune :target-file syntax/dune :zk-noweb yes
+<<source-syntax-dune>>
+#+end_src

@@ -1,0 +1,27 @@
+* text.ml
+:PROPERTIES:
+:ID: core/src/text.ml
+:END:
+
+#+begin_src ocaml :id source-core-src-text-ml
+module Language = struct
+  type t = string
+
+  let of_string = function
+    | "" -> Error "Language name must be non-empty"
+    | name -> Ok name
+
+  let to_string name = name
+  let equal = String.equal
+  let compare = String.compare
+end
+
+type t = {
+  text : string;
+  language : Language.t;
+}
+#+end_src
+
+#+begin_src ocaml :id file-core-src-text-ml :target-file core/src/text.ml :zk-noweb yes
+<<source-core-src-text-ml>>
+#+end_src
