@@ -1,4 +1,4 @@
-#import "/reader/book.typ": chunk, card-source
+#import "/reader/book.typ": card-source, chunk
 #show: card-source
 
 = 项目结构 <ospero.ml>
@@ -23,7 +23,7 @@
   ```
 ]
 
-不过为了实现有限度的开箱即用，我们内置了 @syntax:lang_typst.mli[Typst], `org-mode` 和 `Markdown` 的基本支持。其中前二者的实现是从作者自身的笔记实践中抽取的，而 `Markdown` 的对应实现则是为了让更多用户可以开箱即用而设计的，因此，前二者的实现成熟度与更新频率将明显高于后者 (事实上，作者并没有使用 `Markdown` 作为自身知识管理系统语言的想法)。
+不过为了实现有限度的开箱即用，我们内置了 @syntax:lang_typst.mli[`Typst`], @syntax:lang_org.mli[`org-mode`] 和 @syntax:lang_markdown.mli[`Markdown`] 的基本支持。其中前二者的实现是从作者自身的笔记实践中抽取的，而 `Markdown` 的对应实现则是为了让更多用户可以开箱即用而设计的，因此，前二者的实现成熟度与更新频率将明显高于后者 (事实上，因为种种原因，作者并没有使用 `Markdown` 作为自身知识管理系统语言的想法)。
 
 #chunk(id: <source-ospero-ml-lang>)[
   ```ocaml
