@@ -62,7 +62,9 @@ module Payload_rules : sig
     'node reader -> 'args Syntax.Action.t -> 'node field list ->
     (Payload.field list, Diagnostic.t list) result
 
-  (** Use the same readers for metadata fields described by a record schema. *)
+  (** Use the same readers for metadata fields described by a record schema.
+      A dotted key such as [capture.type] writes a field of a record field,
+      so [:CAPTURE.TYPE:] and [capture = { type = ... }] read alike. *)
   val read_metadata :
     'node reader -> Schema.field list -> 'node field list ->
     (Payload.field list, Diagnostic.t list) result

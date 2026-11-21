@@ -50,6 +50,32 @@ module Payload_rules = struct
   let replace ~name ~value run = replace_rule "Payload_rules" ~name (Rule (value, run))
   let register_items ~name split = add_rule "Payload_rules" ~name (Items split)
 
+  (* The payload kind a carrier holds. *)
+  let kind : type a. a Args.value -> Payload.Kind.t option = fun carrier ->
+    let is other = Args.equal carrier other <> None in
+    if is Args.string then Some String
+    else if is Args.bool then Some Bool
+    else if is Args.int then Some Int
+    else if is Args.contents then Some Contents
+    else if is Args.record then Some Record
+    else if Args.items carrier <> None then Some List
+    else None
+
+  (* What a value the declared carrier cannot read holds instead, if anything. *)
+  let mismatch reader expected node =
+    let reads (Args.Value carrier) =
+      match reader.read carrier node with Matched _ -> true | No_match | Invalid _ -> false
+    in
+    let given =
+      List.find_map (fun (carrier, kind) -> if reads carrier then Some kind else None)
+        [ Args.Value Args.string, Payload.Kind.String; Args.Value Args.bool, Bool;
+          Args.Value Args.int, Int; Args.Value Args.record, Record;
+          Args.Value Args.contents, Contents ]
+    in
+    match kind expected, given with
+    | Some expected, Some given -> Diagnostic.Type_mismatch { expected; given }
+    | _ -> Invalid "this field value cannot be read"
+
   (* Every element is read; diagnostics from all elements are kept. *)
   let read_items : type node b.
       node reader -> b Args.value -> node Provenance.located list Provenance.located ->
@@ -61,7 +87,7 @@ module Payload_rules = struct
         | Matched value -> Ok value
         | No_match ->
             Error [ Diagnostic.make ?span:element.Provenance.span ~path:at
-              (Invalid "no Payload rule matched this list element") ]
+              (mismatch reader item element) ]
         | Invalid errors ->
             Error (List.map (fun (error : Diagnostic.t) ->
               { error with path = at @ error.path }) errors)
@@ -118,7 +144,7 @@ module Payload_rules = struct
           | Matched value -> Ok { Payload.name; value = Args.encode expected value }
           | No_match ->
               Error [ Diagnostic.make ?span:field.value.span ~path
-                (Invalid "no Payload rule matched this field value") ]
+                (mismatch reader expected field.value) ]
           | Invalid errors ->
               Error (List.map (fun (error : Diagnostic.t) ->
                 { error with path = path @ error.path }) errors)
@@ -135,10 +161,61 @@ module Payload_rules = struct
   let read_arguments reader action fields =
     read_fields reader (Syntax.Action.parameters action) fields
 
-  let read_metadata reader schema fields =
+  (* [capture.type] names field [type] of the record field [capture]; the
+     key's spans are split at the dot. *)
+  let split (field : _ field) =
+    match String.index_opt field.name.value '.' with
+    | None -> None
+    | Some dot ->
+        let part start stop value =
+          { Provenance.value;
+            span = Option.map (fun (s : Provenance.span) ->
+              { s with start = s.start + start; stop = s.start + stop }) field.name.span }
+        in
+        let name = field.name.value and n = String.length field.name.value in
+        Some (part 0 dot (String.sub name 0 dot),
+              { field with name = part (dot + 1) n (String.sub name (dot + 1) (n - dot - 1)) })
+
+  let record_fields schema name =
+    List.find_map (fun (s : Schema.field) ->
+      match s.shape with Record fields when s.name = name -> Some fields | _ -> None) schema
+
+  (* Dotted keys of one record field are gathered at its first occurrence and
+     read as a nested record, as TOML reads them. *)
+  let rec read_metadata reader schema fields =
     let inputs = List.map (fun (field : Schema.field) ->
       field.name, Args.of_shape field.shape) schema in
-    read_fields reader inputs fields
+    let nested field =
+      Option.bind (split field) (fun (prefix, rest) ->
+        Option.map (fun sub -> prefix, sub, rest) (record_fields schema prefix.Provenance.value))
+    in
+    let rec gather = function
+      | [] -> []
+      | field :: rest -> (
+          match nested field with
+          | None -> `Flat field :: gather rest
+          | Some (prefix, sub, first) ->
+              let same, others =
+                List.partition_map (fun f ->
+                  match nested f with
+                  | Some (p, _, inner) when p.value = prefix.value -> Left inner
+                  | _ -> Right f) rest
+              in
+              `Nested (prefix, sub, first :: same) :: gather others)
+    in
+    let read = function
+      | `Flat field -> read_fields reader inputs [ field ]
+      | `Nested ((prefix : string Provenance.located), sub, fields) ->
+          read_metadata reader sub fields
+          |> Result.map (fun fields ->
+              [ { Payload.name = prefix; value = Provenance.located (Payload.Record fields) } ])
+          |> Result.map_error (List.map (fun (d : Diagnostic.t) ->
+              { d with path = Diagnostic.Field prefix.value :: d.path }))
+    in
+    let results = List.map read (gather fields) in
+    match List.concat_map (function Error e -> e | Ok _ -> []) results with
+    | [] -> Ok (List.concat_map (function Ok f -> f | Error _ -> []) results)
+    | errors -> Error errors
 end
 
 module Identity_rules = struct
