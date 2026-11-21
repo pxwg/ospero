@@ -92,6 +92,45 @@ type ('value, 'issue) product_decision =
   | Reject_product of 'issue list
   | Block_product of Failure.id list
 
+(** A product under construction: a value together with the exceptional inputs
+    it used, or the causes that leave it unavailable. Reading inputs through
+    these combinators records their causes; [decide] turns the result into the
+    matching decision, so a policy states only how a value is computed. *)
+module Product : sig
+  type 'a t
+
+  val return : 'a -> 'a t
+
+  (** Unavailable for these causes. Raises [Invalid_argument] on an empty list. *)
+  val unavailable : Failure.id list -> 'a t
+
+  val of_availability : 'a availability -> 'a t
+
+  (** Read an input product. Raises [Invalid_argument] for an unknown identity
+      or output, which the fixed topology rules out. *)
+  val vertex :
+    ?name:string -> ('vertex, 'edge) State.t -> Graph.Vertex_id.t -> 'vertex t
+
+  val edge : ?name:string -> ('vertex, 'edge) State.t -> Graph.Edge_id.t -> 'edge t
+
+  val map : ('a -> 'b) -> 'a t -> 'b t
+  val bind : 'a t -> ('a -> 'b t) -> 'b t
+
+  (** Combine independent products. When several are unavailable, all their
+      causes are kept. *)
+  val both : 'a t -> 'b t -> ('a * 'b) t
+
+  val all : 'a t list -> 'a list t
+  val ( let+ ) : 'a t -> ('a -> 'b) -> 'b t
+  val ( and+ ) : 'a t -> 'b t -> ('a * 'b) t
+  val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
+  val ( and* ) : 'a t -> 'b t -> ('a * 'b) t
+
+  (** [Produce] without causes, [Derive] with degraded ones, otherwise
+      [Block_product] citing every unavailable input. *)
+  val decide : 'a t -> ('a, 'issue) product_decision
+end
+
 type ('vertex, 'edge, 'issue) product_assignment =
   (('vertex, 'issue) product_decision, ('edge, 'issue) product_decision) assignment
 

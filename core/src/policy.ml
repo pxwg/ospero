@@ -101,6 +101,65 @@ type ('value, 'issue) product_decision =
   | Reject_product of 'issue list
   | Block_product of Failure.id list
 
+(* A value with the exceptional inputs it used, or the causes that leave it
+   unavailable. Combinators accumulate causes, so callers never write them. *)
+module Product = struct
+  type 'a t =
+    | Available of 'a * Cause_set.t
+    | Unavailable of Cause_set.t
+
+  let return value = Available (value, Cause_set.empty)
+
+  let unavailable causes =
+    if causes = [] then invalid_arg "Policy.Product.unavailable: no cause";
+    Unavailable (Cause_set.of_list causes)
+
+  let of_availability = function
+    | Ready value -> return value
+    | Degraded (value, cause) -> Available (value, Cause_set.singleton cause)
+    | Unavailable cause -> Unavailable (Cause_set.singleton cause)
+
+  let read kind = function
+    | Some availability -> of_availability availability
+    | None -> invalid_arg ("Policy.Product." ^ kind ^ ": unknown identity or output")
+
+  let vertex ?name state id = read "vertex" (State.vertex ?name state id)
+  let edge ?name state id = read "edge" (State.edge ?name state id)
+
+  let map f = function
+    | Available (value, causes) -> Available (f value, causes)
+    | Unavailable causes -> Unavailable causes
+
+  let bind product f =
+    match product with
+    | Unavailable causes -> Unavailable causes
+    | Available (value, used) -> (
+        match f value with
+        | Available (value, more) -> Available (value, Cause_set.union used more)
+        | Unavailable causes -> Unavailable causes)
+
+  (* Both sides are read, so every unavailable input is cited. *)
+  let both a b =
+    match (a, b) with
+    | Available (x, c), Available (y, d) -> Available ((x, y), Cause_set.union c d)
+    | Unavailable c, Unavailable d -> Unavailable (Cause_set.union c d)
+    | Unavailable c, Available _ | Available _, Unavailable c -> Unavailable c
+
+  let all products =
+    List.fold_right (fun p rest -> map (fun (x, xs) -> x :: xs) (both p rest)) products
+      (return [])
+
+  let ( let+ ) product f = map f product
+  let ( and+ ) = both
+  let ( let* ) = bind
+  let ( and* ) = both
+
+  let decide = function
+    | Available (value, causes) when Cause_set.is_empty causes -> Produce value
+    | Available (value, causes) -> Derive (value, Cause_set.elements causes)
+    | Unavailable causes -> Block_product (Cause_set.elements causes)
+end
+
 type ('vertex, 'edge, 'issue) product_assignment =
   (('vertex, 'issue) product_decision, ('edge, 'issue) product_decision) assignment
 
