@@ -8,4 +8,6 @@ En el espejo de esta noche alcanzo mi insospechado rostro eterno.
 
 An [[https://ocaml.org/][OCaml]] core for knowledge graphs.
 
+[[file:lit/README.md][Typst literate programming environment]].
+
 [[file:LICENSE][MIT]].
