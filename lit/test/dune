@@ -1,0 +1,3 @@
+(test
+ (name examples)
+ (libraries ospero))

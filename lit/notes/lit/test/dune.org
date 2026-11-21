@@ -1,0 +1,14 @@
+* dune
+:PROPERTIES:
+:ID: lit/test/dune
+:END:
+
+#+begin_src dune :id source-lit-test-dune
+(test
+ (name examples)
+ (libraries ospero))
+#+end_src
+
+#+begin_src dune :id file-lit-test-dune :target-file lit/test/dune :zk-noweb yes
+<<source-lit-test-dune>>
+#+end_src
