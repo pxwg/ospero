@@ -1,0 +1,4 @@
+(executable
+ (name lit_lsp)
+ (optional)
+ (libraries ospero yojson uri unix str))

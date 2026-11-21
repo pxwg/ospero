@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+if [ "$#" -eq 0 ]; then set -- index.org; fi
+exec "${NVIM_BIN:-nvim}" --cmd 'set exrc' -- "$@"
