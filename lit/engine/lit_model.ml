@@ -141,6 +141,13 @@ end)
 
 type piece = Code of string | Include_code of { id : Graph.Vertex_id.t; padding : string }
 
+type consumption =
+  | Code_piece of piece
+  | Chunk_ref of Graph.Vertex_id.t
+  | Nested_card of Graph.Vertex_id.t
+  | Embed_card of Graph.Vertex_id.t
+  | Link_ref of Graph.Vertex_id.t
+
 (* Each line is read in file coordinates. Drop the Typst margin before
    interpreting a whole-line splice and keep the splice's own indentation. *)
 let pieces block =
@@ -153,7 +160,7 @@ let pieces block =
     let span = Option.map (fun (s : P.span) ->
       { s with start = s.start + start; stop = s.start + stop }) block.contents.span in
     pos ?span value in
-  let emit piece = O.Emit (O.Observed.Consume piece) in
+  let emit piece = O.Emit (O.Observed.Consume (Code_piece piece)) in
   let code = Buffer.create length in
   let flush acc =
     if Buffer.length code = 0 then acc else
@@ -193,12 +200,17 @@ let pieces block =
 module Observe = Frontend.Make (struct
   include Decoder
   type nonrec relation = relation
-  type consumption = piece
+  type nonrec consumption = consumption
   type error = Frontend.Diagnostic.t
   let interpret = function
     | Reference (relation, target) ->
         (match Graph.Vertex_id.of_string target.value with
-         | Ok id -> [O.Relate { target = { target with value = id }; relation }]
+         | Ok id ->
+             let emit = match relation with
+               | Link -> [O.Emit (O.Observed.Consume (Link_ref id))]
+               | Embed -> [O.Emit (O.Observed.Consume (Embed_card id))]
+               | Splice -> [] in
+             O.Relate { target = { target with value = id }; relation } :: emit
          | Error message -> [O.Fail (diagnostic ?span:target.span message)])
     | Code_body block -> pieces block
     | Block block ->
@@ -208,12 +220,16 @@ module Observe = Frontend.Make (struct
                               target = Option.map (fun path -> path.P.value) block.target } in
         let body = pos ?span [pos ?span (O.Source.Action (Ok (Code_body block)))] in
         (match Graph.Vertex_id.of_string block.id.value with
-         | Ok id -> [O.Define (pos ?span { O.Source.id = { block.id with value = id };
-                                           title = pos title; metadata = pos (Ok metadata); body })]
+         | Ok id ->
+             [O.Define (pos ?span { O.Source.id = { block.id with value = id };
+                                    title = pos title; metadata = pos (Ok metadata); body });
+              O.Emit (O.Observed.Consume (Chunk_ref id))]
          | Error error -> [O.Fail (diagnostic ?span:block.id.span error)])
     | Define body ->
         match Syntax.parse_contents config body with
-        | Ok note -> [O.Define (Decoder.decode_source note)]
+        | Ok note ->
+            let decoded = Decoder.decode_source note in
+            [O.Define decoded; O.Emit (O.Observed.Consume (Nested_card decoded.value.id.value))]
         | Error errors -> List.map (fun error -> O.Fail error) errors
 end)
 
@@ -250,8 +266,8 @@ let code_cards obs =
     | Ok (Some metadata) ->
         let pieces = Option.value (O.body obs id) ~default:[] |> List.filter_map (fun item ->
           match item.P.value with
-          | O.Observed.Consume piece -> Some piece
-          | O.Observed.Text _ -> None) in
+          | O.Observed.Consume (Code_piece piece) -> Some piece
+          | O.Observed.Consume _ | O.Observed.Text _ -> None) in
         Some { id; title = note.title.text; language = metadata.language; target = metadata.target; pieces }
     | Ok None | Error _ -> None)
 
