@@ -30,17 +30,14 @@ and argument = {
   name : string Provenance.located option;
   value : value Provenance.located;
 }
+
 type context = value Card.context
-
 val scan : file:string -> string -> (heading, value, node) Card.outline
-
 val children : node -> node Provenance.located list
+
 val values : value Rules.Payload_rules.t
-
 val identities : heading Rules.Identity_rules.t
-
 val actions : (node, context) Rules.Action_rules.t
-
 val adapter :
   ?values:value Rules.Payload_rules.t ->
   ?identities:heading Rules.Identity_rules.t ->
@@ -48,15 +45,14 @@ val adapter :
   ?define:string ->
   ('metadata, 'action) Syntax.Frontend_input.t ->
   string Syntax.adapter
+
 module Sugar : sig
   val references :
     'args Syntax.Action.t -> (string Provenance.located -> 'args) ->
     (node, context) Rules.Action_rules.t -> (node, context) Rules.Action_rules.t
-
   val include_note :
     'args Syntax.Action.t -> (string Provenance.located -> 'args) ->
     (node, context) Rules.Action_rules.t -> (node, context) Rules.Action_rules.t
-
   val nested_card :
     'args Syntax.Action.t ->
     (contents:Text.t Provenance.located -> depth:int Provenance.located -> 'args) ->

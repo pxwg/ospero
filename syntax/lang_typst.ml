@@ -39,7 +39,6 @@ and argument = {
 type context = value Card.context
 
 let values = Value.rules
-
 let identities =
   Identity_rules.empty
   |> Identity_rules.register ~name:"heading-label" (fun (h : heading Provenance.located) ->
@@ -54,12 +53,6 @@ let identities =
            match Graph.Vertex_id.of_string label.value with
            | Ok id -> Rules.Matched { label with value = id }
            | Error message -> Rules.Invalid [ Card.invalid ?span:label.span message ])
-
-(* {1 Lexing}
-
-   Positions are byte offsets into the text. Markup, code, raw text, math
-   and comments are distinguished so that only real markup is read. *)
-
 type st = {
   file : string;
   text : string;
@@ -86,7 +79,6 @@ let span_while st i p = let j = ref i in while !j < st.len && p st.text.[!j] do 
 let line_end st i = match String.index_from_opt st.text i '\n' with Some e -> e | None -> st.len
 let line_begin st i = match String.rindex_from_opt st.text (i - 1) '\n' with
   | Some b when i > 0 -> b + 1 | _ -> 0
-
 let skip_line_comment st i = line_end st i
 
 let rec skip_block_comment st i depth =
@@ -139,14 +131,10 @@ let skip_string st i = match string_literal st i with Some (j, _) -> j | None ->
 let content_text st start stop =
   Provenance.located ~span:(span st start stop)
     { Text.text = String.sub st.text start (stop - start); language }
-
 let heading_marker st i =
   let j = span_while st i (fun c -> c = '=') in
   if j > i && (j >= st.len || st.text.[j] = ' ' || st.text.[j] = '\n') then Some (j - i) else None
 
-(* A heading runs to its line end, or past the line where a call opened on it
-   closes, as in [= #text(\n  "Title",\n) <id>]. A bracket after a blank is
-   markup and opens nothing; an unclosed call leaves the heading one line. *)
 let heading_end st i =
   let line = line_end st i in
   let rec go i depth =
@@ -163,10 +151,6 @@ let heading_end st i =
       | _ -> go (i + 1) depth
   in
   go i 0
-
-(* Code mode: skip until a top-level character satisfying [stop], or an
-   unmatched closer. Content blocks inside are markup; their nodes are
-   returned, since an expression renders them where it stands. *)
 let rec skip_code st i ~stop =
   let rec go i closers found =
     if i >= st.len then st.len, found
@@ -188,8 +172,6 @@ let rec skip_code st i ~stop =
   in
   go i [] []
 
-(* Markup from [i]. Nested markup stops at its unmatched closing bracket,
-   whose position is returned. Top-level markup also reports headings. *)
 and markup st ~top i =
   let nodes = ref [] in
   let add n = nodes := n :: !nodes in
@@ -309,9 +291,6 @@ and markup st ~top i =
   let stop = go i 0 true in
   stop, List.rev !nodes
 
-(* An embedded expression at [#]. Calls become nodes; a statement at the top
-   level of the document is a node, its content unread; other expressions are
-   skipped. *)
 and code st ~top i =
   let j = i + 1 in
   let c = char st j in
@@ -354,7 +333,6 @@ and code st ~top i =
     | '(' | '{' -> let q, nodes = skip_code st j ~stop:(fun _ -> false) in min st.len (q + 1), nodes
     | _ -> j, []
 
-(* Arguments after an opening parenthesis, up to and past the closing one. *)
 and arguments_list st i =
   let rec items i acc nodes =
     let i = skip_space st i in
@@ -390,8 +368,6 @@ and skip_space st i =
   else if looking st i "/*" then skip_space st (skip_block_comment st i 0)
   else i
 
-(* A literal value. Anything else is read up to the next argument and kept
-   as [Other]. *)
 and expr st i =
   let located start stop v = Provenance.located ~span:(span st start stop) v in
   let atom, nodes =
@@ -452,16 +428,12 @@ let scan ~file text = read ~file text ~start:0
 let children = function
   | Call { inner; _ } -> inner
   | Reference _ | Card _ | Label _ | Statement _ -> []
-
-(* {1 Named calls} *)
-
 let rec needs_evaluation (v : value Provenance.located) =
   match v.value with
   | Other _ | Label _ -> [ v ]
   | Array items -> List.concat_map needs_evaluation items
   | Table fields -> List.concat_map (fun (_, v) -> needs_evaluation v) fields
   | String _ | Int _ | Bool _ | Contents _ -> []
-
 let actions =
   Action_rules.empty
   |> Action_rules.register ~sugar:"named-call" (fun node (context : context) ->
@@ -494,14 +466,12 @@ let actions =
                     { Action_rules.call = Provenance.located ?span:node.span call; taken = node.span }
               | Error errors -> Rules.Invalid errors)
        | _ -> Rules.No_match)
-
 let adapter ?(values = values) ?(identities = identities) ?(actions = actions)
     ?(define = "define") frontend =
   Card.adapter
     { Card.language; source = Fun.id; scan = (fun ~file text -> scan ~file text);
       read; nested = (fun n -> Card n); children }
     ~values ~identities ~actions ~define frontend
-
 module Sugar = struct
   let references action make rules =
     rules
@@ -515,13 +485,9 @@ module Sugar = struct
              let span = Option.map (fun (s : Provenance.span) -> { s with start = s.start + 1; stop = s.stop - 1 }) span in
              Rules.Matched (make (Provenance.located ?span l))
          | _ -> Rules.No_match)
-
-  (* The body must be exactly one reference. *)
   let include_note action make =
     Action_rules.bind ~sugar:"include-note" action (fun node _ ->
       match node.Provenance.value with
-      (* The reference is the body, written after the call or as its first
-         argument; display options are left to rendering. *)
       | Call { name = { value = "include-note"; _ }; trailing; arguments; inner; _ }
         when List.length trailing = 1
              || (match arguments with
@@ -531,7 +497,6 @@ module Sugar = struct
            | [ { value = Reference { target; _ }; _ } ] -> Rules.Matched (make target)
            | _ -> Rules.Invalid [ Card.invalid ?span:node.span "include-note takes one @reference" ])
       | _ -> Rules.No_match)
-
   let nested_card action make =
     Card.nested_card (function Card n -> Some n | _ -> None) action make
 end
