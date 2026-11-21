@@ -2,6 +2,8 @@
 
 运行 `./lit/edit` 可以在 Neovim 打开导览。`:LitNew` 新建卡片，`zf` 按标题搜索，`K` 查看当前引用。跳转、反向引用和补全使用 `ospero-lit` 提供的标准 LSP 接口。编辑器与构建命令需要装有项目依赖的 OCaml/opam 环境，以及 `yojson` 和 `uri`。Tinymist 以 `lit/` 为根目录按单文件工作。单篇卡片可直接编译，跨卡片引用的标题、跳转和诊断由 `ospero-lit` 提供。生成网页还需要支持 HTML 输出的 Typst，本项目用 0.15.1 验证。
 
+同一个 opam switch 中装有 `ocaml-lsp-server`（`ocamllsp`）时，Lit 会把 tangle 结果投影到临时 Dune 工作区。Neovim 原生 LSP 客户端在隐藏的生成文件缓冲区上启动 `ocamllsp`。跳转、诊断和编辑的坐标由 Ospero 的 tangle 投影转换。`K` 和 `gd` 在 OCaml 代码中查看类型和跳转定义，在 `<<id>>` 上仍然定位卡片。引用和单一展开位置的补全使用标准 LSP 接口。多个展开实例的 hover 按结果合并，结果有差异时显示各自的拼接位置。Rename 只有在修改卡片后重新拼接能精确复现 OCaml 服务所请求的编辑时才会提交。未保存的改动通过 LSP 同步，保存后 Dune 会重新构建。`ocamllsp` 发出的无版本诊断在生成文件与保存内容一致时显示。
+
 ```sh
 ./lit/build tangle   # 生成 lit/out/
 ./lit/build weave    # 更新 lit/index.html

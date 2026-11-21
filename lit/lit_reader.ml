@@ -35,8 +35,9 @@ let chunk_typst out obs splices card =
   let summary = Option.value card.target ~default:id in
   let raw_buf = Buffer.create 256 in
   List.iter (function
-    | Code text -> Buffer.add_string raw_buf text
-    | Include_code { id = target; padding } ->
+    | Code lines -> List.iter (fun line -> Buffer.add_string raw_buf line.P.value) lines
+    | Include_code { target; padding } ->
+        let target = target.P.value in
         let k = Hashtbl.length splices in
         let block = escape (id_name target) and owner_card = escape (id_name (owner obs target)) in
         let pad = escape padding in

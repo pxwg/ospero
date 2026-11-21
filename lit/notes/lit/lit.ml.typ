@@ -8,26 +8,6 @@
 ```ocaml
 open Lit_model
 
-let rec ensure_directory path =
-  match (Unix.lstat path).st_kind with
-  | Unix.S_DIR -> ()
-  | _ -> fail "%s is not a directory" path
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
-      ensure_directory (Filename.dirname path);
-      Unix.mkdir path 0o755
-
-let write path body =
-  let dir = Filename.dirname path in
-  ensure_directory dir;
-  (match (Unix.lstat path).st_kind with
-   | Unix.S_REG -> ()
-   | _ -> fail "%s is not a regular file" path
-   | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ());
-  let staged, channel = Filename.open_temp_file ~temp_dir:dir ".lit-" ".tmp" in
-  Fun.protect ~finally:(fun () -> close_out_noerr channel; if Sys.file_exists staged then Sys.remove staged)
-    (fun () -> output_string channel body; close_out channel;
-      Unix.chmod staged 0o644; Unix.rename staged path)
-
 let run command workspace =
   let workspace = Unix.realpath workspace in
   let files = sources workspace in

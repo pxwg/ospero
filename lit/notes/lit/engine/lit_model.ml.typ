@@ -169,7 +169,9 @@ module Decoder = Frontend.Decode (struct
   let decode_action = Syntax.Frontend_input.decode_action input
 end)
 
-type piece = Code of string | Include_code of { id : Graph.Vertex_id.t; padding : string }
+type piece =
+  | Code of string P.located list
+  | Include_code of { target : Graph.Vertex_id.t P.located; padding : string }
 
 type consumption =
   | Code_piece of piece
@@ -191,14 +193,10 @@ let pieces block =
       { s with start = s.start + start; stop = s.start + stop }) block.contents.span in
     pos ?span value in
   let emit piece = O.Emit (O.Observed.Consume (Code_piece piece)) in
-  let code = Buffer.create length in
-  let flush acc =
-    if Buffer.length code = 0 then acc else
-    let piece = emit (Code (Buffer.contents code)) in
-    Buffer.clear code;
-    piece :: acc in
-  let rec scan from acc =
-    if from = length then List.rev (flush acc) else
+  let flush lines acc =
+    if lines = [] then acc else emit (Code (List.rev lines)) :: acc in
+  let rec scan from lines acc =
+    if from = length then List.rev (flush lines acc) else
     let stop = Option.value (String.index_from_opt text from '\n') ~default:length in
     let next = min (stop + 1) length in
     let line = String.sub text from (stop - from) in
@@ -206,7 +204,7 @@ let pieces block =
     let first = after_margin from (from + min margin (stop - from)) in
     if trimmed <> "" && first - from < margin then
       let loc = slice from stop () in
-      scan next (O.Fail (diagnostic ?span:loc.span "code line starts to the left of its fence") :: flush acc)
+      scan next [] (O.Fail (diagnostic ?span:loc.span "code line starts to the left of its fence") :: flush lines acc)
     else if block.noweb.value && String.starts_with ~prefix:"<<" trimmed
          && String.ends_with ~suffix:">>" trimmed && String.length trimmed >= 4 then
       let marker = String.index line '<' in
@@ -214,18 +212,17 @@ let pieces block =
       let raw = String.sub trimmed 2 (String.length trimmed - 4) in
       let start = from + marker + 2 in
       let target = slice start (start + String.length raw) raw in
-      let acc = flush acc in
+      let acc = flush lines acc in
       let acc = match Graph.Vertex_id.of_string raw with
         | Ok id when not (String.exists (function ' ' | '\t' | '<' | '>' -> true | _ -> false) raw) ->
-            emit (Include_code { id; padding }) ::
-            O.Relate { target = { target with value = id }; relation = Splice } :: acc
+            let target = { target with value = id } in
+            emit (Include_code { target; padding }) :: O.Relate { target; relation = Splice } :: acc
         | _ -> O.Fail (diagnostic ?span:target.span "expected <<card-id>>") :: acc in
-      scan next acc
-    else begin
-      Buffer.add_substring code text first (next - first);
-      scan next acc
-    end in
-  scan 0 []
+      scan next [] acc
+    else
+      let line = slice first next (String.sub text first (next - first)) in
+      scan next (line :: lines) acc in
+  scan 0 [] []
 
 module Observe = Frontend.Make (struct
   include Decoder
@@ -335,11 +332,11 @@ let validate cards =
   List.iter (fun card ->
     List.iter (function
       | Code _ -> ()
-      | Include_code { id; _ } ->
-          match Hashtbl.find_opt index id with
-          | None -> reject card "%s: %s is not a code card" (id_name card.id) (id_name id)
-          | Some target when target.language <> card.language ->
-              reject card "%s: incompatible language in %s" (id_name card.id) (id_name id)
+      | Include_code { target; _ } ->
+          match Hashtbl.find_opt index target.value with
+          | None -> reject card "%s: %s is not a code card" (id_name card.id) (id_name target.value)
+          | Some included when included.language <> card.language ->
+              reject card "%s: incompatible language in %s" (id_name card.id) (id_name target.value)
           | Some _ -> ()) card.pieces) cards;
   let checked = Hashtbl.create (List.length cards) in
   let rec check_cycles stack card =
@@ -348,7 +345,7 @@ let validate cards =
     if not (Hashtbl.mem checked card.id) then begin
       List.iter (function
         | Code _ -> ()
-        | Include_code { id; _ } -> check_cycles (card.id :: stack) (Hashtbl.find index id)) card.pieces;
+        | Include_code { target; _ } -> check_cycles (card.id :: stack) (Hashtbl.find index target.value)) card.pieces;
       Hashtbl.add checked card.id ()
     end
   in
@@ -362,6 +359,8 @@ let validate cards =
     check_parent (Filename.dirname path)) plan;
   index, plan
 
+(* Register block IDs from the same calls that will define them. The Typst
+   adapter handles heading IDs, including headings nested in a define. *)
 ```
 ]
 
@@ -371,8 +370,6 @@ let validate cards =
 
 #chunk(id: <source-lit-engine-lit-model-ml-observe>)[
 ```ocaml
-(* Register block IDs from the same calls that will define them. The Typst
-   adapter handles heading IDs, including headings nested in a define. *)
 let rec code_ids (note : Syntax.raw_note P.located) =
   List.concat_map (fun item -> match item.P.value with
     | O.Source.Action (Ok (call : Frontend.Invocation.t)) ->
@@ -455,25 +452,133 @@ let problems obs diagnostics =
   try ignore (validate (code_cards obs)); [] with
   | Invalid_code (id, message) -> [List.nth_opt (definition_spans obs id) 0, message]
 
-let indent padding body =
-  if padding = "" then body else
-  String.split_on_char '\n' body
-  |> List.map (fun line -> if String.trim line = "" then line else padding ^ line)
-  |> String.concat "\n"
+type segment = {
+  generated_start : int;
+  origin : P.span;
+  splices : P.span list;  (* Nearest splice first. *)
+}
 
-let outputs cards =
+type output = { text : string; segments : segment list }
+
+let project cards =
   let index, plan = validate cards in
-  let cache = Hashtbl.create (List.length cards) in
-  let rec expand card =
-    match Hashtbl.find_opt cache card.id with
-    | Some body -> body
-    | None ->
-        let body = card.pieces |> List.map (function
-          | Code text -> text
-          | Include_code { id; padding } -> indent padding (expand (Hashtbl.find index id))) |> String.concat "" in
-        Hashtbl.add cache card.id body;
-        body in
-  List.map (fun (path, card) -> path, expand card) plan
+  let render root =
+    let text = Buffer.create 256 in
+    let segments = ref [] in
+    let rec expand padding splices card =
+      List.iter (function
+        | Code lines -> List.iter (fun (line : string P.located) ->
+            if padding <> "" && String.trim line.value <> "" then Buffer.add_string text padding;
+            Option.iter (fun origin ->
+              segments := { generated_start = Buffer.length text; origin; splices } :: !segments) line.span;
+            Buffer.add_string text line.value) lines
+        | Include_code { target; padding = extra } ->
+            let splices = match target.span with None -> splices | Some span -> span :: splices in
+            expand (padding ^ extra) splices (Hashtbl.find index target.value)) card.pieces in
+    expand "" [] root;
+    { text = Buffer.contents text; segments = List.rev !segments } in
+  List.map (fun (path, card) -> path, render card) plan
+
+let outputs cards = List.map (fun (path, output) -> path, output.text) (project cards)
+
+let generated_stop segment =
+  segment.generated_start + segment.origin.stop - segment.origin.start
+
+let occurrences outputs file at =
+  Files.bindings outputs |> List.concat_map (fun (target, output) ->
+    output.segments |> List.filter_map (fun segment ->
+      let origin = segment.origin in
+      if origin.file = file && origin.start <= at && at < origin.stop then
+        Some (target, segment.generated_start + at - origin.start, segment.splices)
+      else None))
+
+(* A range can span several lines of the same occurrence. Across a splice,
+   only a diagnostic may be clipped to its first source line. *)
+let origin_of_range ?(clip = false) output (span : P.span) =
+  let start, stop = span.start, span.stop in
+  let hits segment = segment.generated_start < stop && start < generated_stop segment in
+  let segments = if start <> stop then List.filter hits output.segments else
+    match List.find_opt (fun segment ->
+      segment.generated_start <= start && start < generated_stop segment) output.segments with
+    | Some segment -> [segment]
+    | None -> Option.to_list (List.find_opt (fun segment -> generated_stop segment = start) output.segments) in
+  match segments with
+  | [] -> None
+  | first :: rest ->
+      let last = List.fold_left (fun _ segment -> segment) first rest in
+      let same_occurrence segment =
+        segment.origin.file = first.origin.file && segment.splices = first.splices in
+      let start_in segment = segment.origin.start + max 0 (start - segment.generated_start) in
+      let end_in segment = segment.origin.start + min (stop - segment.generated_start)
+          (segment.origin.stop - segment.origin.start) in
+      if List.for_all same_occurrence rest &&
+         (clip || (start >= first.generated_start && stop <= generated_stop last)) then
+        Some { first.origin with start = start_in first; stop = end_in last }
+      else if clip then Some { first.origin with start = start_in first; stop = end_in first }
+      else None
+
+let project_sources sources =
+  let obs, diagnostics = observe_sources sources in
+  if problems obs diagnostics <> [] then None
+  else Some (project (code_cards obs) |> List.to_seq |> Files.of_seq)
+
+let texts = Files.map (fun output -> output.text)
+
+let replace text edits =
+  let writer = Buffer.create (String.length text) in
+  let finish = List.fold_left (fun cursor ((span : P.span), replacement) ->
+    if span.start < cursor then fail "Overlapping OCaml edits";
+    Buffer.add_substring writer text cursor (span.start - cursor);
+    Buffer.add_string writer replacement;
+    span.stop) 0 edits in
+  Buffer.add_substring writer text finish (String.length text - finish);
+  Buffer.contents writer
+
+let edits_by_file edits =
+  List.fold_left (fun files ((span : P.span), _ as edit) ->
+    Files.update span.file (fun old -> Some (edit :: Option.value old ~default:[])) files)
+    Files.empty edits
+  |> Files.map (List.sort_uniq compare)
+
+let apply_edits documents edits =
+  Files.fold (fun file edits documents ->
+    Files.add file (replace (Files.find file documents) edits) documents) edits documents
+
+let project_edits ~sources ~parsed ~outputs:projection generated =
+  let original = List.map (fun ((span : P.span), replacement) ->
+    let output = Files.find span.file projection in
+    match origin_of_range output span with
+    | Some origin -> origin, replacement
+    | None -> fail "OCaml edit crosses a splice or generated indentation") generated
+    |> edits_by_file in
+  let expected = apply_edits (texts projection) (edits_by_file generated) in
+  let revised = apply_edits sources original in
+  let parsed = Files.fold (fun file _ parsed ->
+    Files.add file (parse_source file (Files.find file revised)) parsed) original parsed in
+  let obs, diagnostics = observe_parsed parsed in
+  if problems obs diagnostics = [] &&
+     Files.equal String.equal (List.to_seq (outputs (code_cards obs)) |> Files.of_seq) expected then original
+  else fail "OCaml edits cannot be represented by a single change to the Lit source"
+
+let rec ensure_directory path =
+  match (Unix.lstat path).st_kind with
+  | Unix.S_DIR -> ()
+  | _ -> fail "%s is not a directory" path
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+      ensure_directory (Filename.dirname path);
+      Unix.mkdir path 0o755
+
+let write path body =
+  let dir = Filename.dirname path in
+  ensure_directory dir;
+  (match (Unix.lstat path).st_kind with
+   | Unix.S_REG -> ()
+   | _ -> fail "%s is not a regular file" path
+   | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ());
+  let staged, channel = Filename.open_temp_file ~temp_dir:dir ".lit-" ".tmp" in
+  Fun.protect ~finally:(fun () -> close_out_noerr channel; if Sys.file_exists staged then Sys.remove staged)
+    (fun () -> output_string channel body; close_out channel;
+      Unix.chmod staged 0o644; Unix.rename staged path)
 ```
 ]
 

@@ -1,9 +1,17 @@
+local editor_dir = vim.fs.dirname(debug.getinfo(1, "S").source:sub(2))
+local repo = vim.fs.dirname(vim.fs.dirname(editor_dir))
+
 return function(root)
   local group = vim.api.nvim_create_augroup("OsperoLit:" .. root, { clear = true })
-  local repo = vim.fs.dirname(root)
   local module = "ospero-lit.titles:" .. root
-  local titles = package.loaded[module] or dofile(root .. "/nvim/titles.lua")
+  local titles = package.loaded[module] or dofile(editor_dir .. "/titles.lua")
   package.loaded[module] = titles
+  local ocaml_module = "ospero-lit.ocaml:" .. root
+  local ocaml = package.loaded[ocaml_module]
+  if not ocaml then
+    ocaml = dofile(editor_dir .. "/ocaml.lua").new(root)
+    package.loaded[ocaml_module] = ocaml
+  end
   local notes = root .. "/notes"
   local function belongs(buf)
     local file = vim.api.nvim_buf_get_name(buf)
@@ -112,7 +120,10 @@ return function(root)
         return "typst"
       end,
       flags = { debounce_text_changes = 180 },
+      init_options = { ocamlProjection = vim.fn.executable("opam") == 1 },
+      on_exit = function(_, _, id) vim.schedule(function() ocaml.reset(id) end) end,
       handlers = {
+        ["ospero/projection"] = function(_, params, ctx) ocaml.update(params, ctx) end,
         ["ospero/titles"] = function(_, params)
           local target = vim.uri_to_bufnr(params.uri)
           if vim.api.nvim_buf_is_loaded(target) and vim.lsp.util.buf_versions[target] == params.version then
@@ -124,10 +135,12 @@ return function(root)
     if not client then
       return
     end
+    ocaml.attach(buf)
     local function map(key, action, desc)
       vim.keymap.set("n", key, action, { buffer = buf, desc = desc })
     end
-    map("K", vim.lsp.buf.hover, "查看卡片标题与 ID")
+    map("K", vim.lsp.buf.hover, "查看卡片或 OCaml 类型")
+    map("gd", vim.lsp.buf.definition, "跳转到卡片或 OCaml 定义")
     map("zf", function()
       local server = vim.lsp.get_client_by_id(client)
       if not server then

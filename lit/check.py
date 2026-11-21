@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LIT = ROOT / "lit"
 TOOLS = {
     "lit/dune", "lit/engine/dune", "lit/engine/lit_model.ml", "lit/lit.ml",
-    "lit/lit_reader.ml", "lit/nvim/dune", "lit/nvim/lit_lsp.ml",
+    "lit/lit_reader.ml", "lit/nvim/dune", "lit/nvim/lit_lsp.ml", "lit/nvim/lit_ocaml.ml",
     "lit/test/dune", "lit/test/examples.ml",
 }
 
@@ -183,6 +183,46 @@ def check_indentation(workspace):
             raise ValueError("failed tangle modified the output")
 
 
+def check_ocaml_lsp(workspace):
+    if shutil.which("nvim") is None:
+        print("OCaml LSP: skipped (Neovim unavailable)")
+        return
+    opam = ["opam", "exec", "--"]
+    if subprocess.run([*opam, "ocamllsp", "--version"], cwd=ROOT,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+        print("OCaml LSP: skipped (ocamllsp unavailable)")
+        return
+
+    def chunk(key, code, target=None, language="ocaml"):
+        target_arg = "" if target is None else f', target: "{target}"'
+        fence = chr(96) * 3
+        body = "".join(f"  {line}\n" for line in code.splitlines())
+        return f"#chunk(id: <{key}>{target_arg})[\n  {fence}{language}\n{body}  {fence}\n]\n\n"
+
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    shared, target = notes / "shared.typ", notes / "target.typ"
+    source = '= 共享源码 <shared>\n\n@targets[]\n\n' + chunk("use", "let result = x")
+    source += chunk("local", 'let value = String.length "é"\nlet foo = value')
+    source += chunk("dune-project", "(lang dune 3.24)", "dune-project", "text")
+    source += chunk("dune", "(library (name example) (wrapped false))", "dune", "text")
+    source += chunk("provider", "let provided = 42", "provider.ml")
+    generated_from = "= Targets <targets>\n\n" + chunk("root", '''module A = struct
+  let x = 42
+  <<use>>
+end
+module B = struct
+  let x = "s"
+  <<use>>
+end
+<<local>>
+let cross = Provider.provided''', "test.ml")
+    shared.write_text(source, encoding="utf-8")
+    target.write_text(generated_from, encoding="utf-8")
+    run("nvim", "--headless", "-u", "NONE", "-i", "NONE", "-l", LIT / "test/editor.lua", workspace, LIT)
+    print("OCaml LSP: native Neovim, hover, definition, rename, live completion and saved diagnostics passed")
+
+
 def check(work):
     tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "*.ml", "*.mli", "dune",
                                       "*/dune", "dune-project", "*.opam", ".github/workflows/*", "LICENSE"],
@@ -216,4 +256,5 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary).resolve()
         check_indentation(work / "indentation")
+        check_ocaml_lsp(work / "ocaml-lsp")
         check(work)

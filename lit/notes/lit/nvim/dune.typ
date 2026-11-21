@@ -8,9 +8,9 @@ Dune 将语言服务链接到构建命令使用的同一份模型。
 ```dune
 (executable
  (name lit_lsp)
- (modules lit_lsp)
+ (modules lit_lsp lit_ocaml)
  (optional)
- (libraries lit_engine ospero yojson uri unix str))
+ (libraries lit_engine ospero yojson uri unix str lwt.unix))
 ```
 ]
 

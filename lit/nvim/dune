@@ -1,5 +1,5 @@
 (executable
  (name lit_lsp)
- (modules lit_lsp)
+ (modules lit_lsp lit_ocaml)
  (optional)
- (libraries lit_engine ospero yojson uri unix str))
+ (libraries lit_engine ospero yojson uri unix str lwt.unix))

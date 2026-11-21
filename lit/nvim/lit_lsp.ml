@@ -2,37 +2,9 @@ open Ospero.Core
 open Lit_model
 open Yojson.Safe.Util
 
-let obj fields = `Assoc fields
-let str text = `String text
-let uri file = Uri.make ~scheme:"file" ~host:"" ~path:file () |> Uri.to_string
-let path uri = Uri.of_string uri |> Uri.path |> Uri.pct_decode
+open Lit_ocaml
 
-let send fields =
-  let body = Yojson.Safe.to_string (obj (("jsonrpc", str "2.0") :: fields)) in
-  Printf.printf "Content-Length: %d\r\n\r\n%s%!" (String.length body) body
-
-let position source offset =
-  let line = ref 0 and start = ref 0 in
-  let offset = max 0 (min offset (String.length source)) in
-  for i = 0 to offset - 1 do
-    if source.[i] = '\n' then (incr line; start := i + 1)
-  done;
-  obj ["line", `Int !line; "character", `Int (offset - !start)]
-
-let offset source at =
-  let line = to_int (member "line" at) and column = to_int (member "character" at) in
-  let rec find start = function
-    | 0 ->
-        let stop = Option.value (String.index_from_opt source start '\n') ~default:(String.length source) in
-        if column >= 0 && column <= stop - start then Some (start + column) else None
-    | n when n > 0 ->
-        Option.bind (String.index_from_opt source start '\n') (fun stop -> find (stop + 1) (n - 1))
-    | _ -> None
-  in
-  find 0 line
-
-let range source (span : P.span) =
-  obj ["start", position source span.start; "end", position source span.stop]
+let send = send Lwt_io.stdout
 
 let locations sources spans =
   `List (List.filter_map (fun (span : P.span) ->
@@ -68,17 +40,23 @@ let title_spans obs file source =
         Some (obj ["range", range source span; "source", str written; "label", str label])
     | _ -> None)
 
-let publish file diagnostics =
-  send ["method", str "textDocument/publishDiagnostics";
-        "params", obj ["uri", str (uri file); "diagnostics", `List diagnostics]]
-
 let serve workspace =
-  let buffers = ref Files.empty and published = ref Files.empty in
+  let buffers = ref Files.empty in
   let snapshot = ref None in
   let in_project = is_source workspace in
   let versions = ref Files.empty in
   let disk = ref Files.empty in
   let parsed = ref Files.empty in
+  let workspace_projection = lazy (Lit_ocaml.create ~publish:(fun params ->
+    send (message "ospero/projection" params))) in
+  let projection_enabled = ref false in
+  let lit_diagnostics = ref Files.empty in
+  let publish file =
+    let diagnostics = Option.value (Files.find_opt file !lit_diagnostics) ~default:[] in
+    let params = ["uri", str (uri file); "diagnostics", `List diagnostics] in
+    let params = match Files.find_opt file !versions with
+      | None -> params | Some version -> ("version", version) :: params in
+    send (message "textDocument/publishDiagnostics" (obj params)) in
   let refresh ?(reload = false) file =
     if reload then disk := sources workspace;
     let sources = Files.union (fun _ _ buffer -> Some buffer) !disk !buffers in
@@ -88,28 +66,44 @@ let serve workspace =
       | _ -> source, parse_source file source) sources;
     let obs, diagnostics = observe_parsed (Files.map snd !parsed) in
     snapshot := Some (sources, obs);
-    Files.iter (fun file source ->
-      send ["method", str "ospero/titles"; "params", obj ["uri", str (uri file);
-            "version", Files.find file !versions; "spans", `List (title_spans obs file source)]]) !buffers;
+    let problems = problems obs diagnostics in
     let entries = List.fold_left (fun entries (span, message) ->
       let span = Option.value span ~default:{ P.file; start = 0; stop = 0 } in
       let source = Files.find_opt span.file sources |> Option.value ~default:"" in
       let diagnostic = obj ["range", range source span; "message", str message;
                             "severity", `Int 1; "source", str "ospero-lit"] in
       Files.update span.file (fun prev -> Some (diagnostic :: Option.value prev ~default:[])) entries)
-      Files.empty (problems obs diagnostics) in
-    Files.iter (fun file _ -> if not (Files.mem file entries) then publish file []) !published;
-    Files.iter (fun file diagnostics -> publish file (List.rev diagnostics)) entries;
-    published := entries
+      Files.empty problems in
+    let affected = Files.union (fun _ old _ -> Some old) !lit_diagnostics entries in
+    lit_diagnostics := Files.map List.rev entries;
+    let sync_projection () =
+      let current = if problems <> [] then None else
+        let outputs = project (code_cards obs) |> List.to_seq |> Files.of_seq in
+        Some { Lit_ocaml.sources; parsed = Files.map snd !parsed; outputs } in
+      let saved = if reload then project_sources !disk else None in
+      Lit_ocaml.sync (Lazy.force workspace_projection) ~saved current in
+    let* () = if not !projection_enabled then return () else
+      Lwt.catch sync_projection (function
+        | Failure message | Sys_error message ->
+            prerr_endline ("Lit workspace: " ^ message);
+            return ()
+        | Unix.Unix_error (code, _, path) ->
+            prerr_endline ("Lit workspace: " ^ path ^ ": " ^ Unix.error_message code);
+            return ()
+        | error -> Lwt.fail error) in
+    let* () = Files.bindings !buffers |> Lwt_list.iter_s (fun (file, source) ->
+      send ["method", str "ospero/titles"; "params", obj ["uri", str (uri file);
+            "version", Files.find file !versions; "spans", `List (title_spans obs file source)]]) in
+    Files.bindings affected |> Lwt_list.iter_s (fun (file, _) -> publish file)
   in
   let update ~reload document text =
     let file = path (to_string (member "uri" document)) in
-    if in_project file then begin
+    let* () = if in_project file then begin
       versions := Files.add file (member "version" document) !versions;
       buffers := Files.add file (text ()) !buffers;
       refresh ~reload file
-    end;
-    `Null in
+    end else return () in
+    return `Null in
   let request method_ params =
     let document () = member "textDocument" params in
     let file () = path (to_string (member "uri" (document ()))) in
@@ -118,23 +112,37 @@ let serve workspace =
         let encodings = params |> member "capabilities" |> member "general" |> member "positionEncodings" in
         if not (match encodings with `List values -> List.mem (str "utf-8") values | _ -> false) then
           invalid_arg "Ospero Lit requires UTF-8 positions";
-        obj ["capabilities", obj ["positionEncoding", str "utf-8";
+        projection_enabled := member "ocamlProjection" (member "initializationOptions" params) = `Bool true
+          && Lit_ocaml.available ();
+        return (obj ["capabilities", obj ["positionEncoding", str "utf-8";
           "textDocumentSync", obj ["openClose", `Bool true; "change", `Int 1; "save", `Bool true];
           "hoverProvider", `Bool true; "workspaceSymbolProvider", `Bool true;
           "completionProvider", obj ["triggerCharacters", `List [str "@"; str "<"]];
-          "definitionProvider", `Bool true; "referencesProvider", `Bool true]]
-    | "shutdown" -> `Null
-    | "exit" -> exit 0
+          "definitionProvider", `Bool true; "referencesProvider", `Bool true]])
+    | "ospero/lookup" when !projection_enabled -> return (Lit_ocaml.lookup (Lazy.force workspace_projection) params)
+    | "ospero/projectResult" when !projection_enabled ->
+        return (Lit_ocaml.project_result (Lazy.force workspace_projection) ~versions:!versions params)
+    | "ospero/projectDiagnostics" when !projection_enabled ->
+        return (Lit_ocaml.project_diagnostics (Lazy.force workspace_projection) params)
+    | "shutdown" -> return `Null
+    | "exit" -> Lwt.fail End_of_file
     | "textDocument/didOpen" -> update ~reload:true (document ()) (fun () -> document () |> member "text" |> to_string)
     | "textDocument/didChange" -> update ~reload:false (document ()) (fun () -> params |> member "contentChanges" |> index 0 |> member "text" |> to_string)
-    | "textDocument/didSave" -> let file = file () in if in_project file then refresh ~reload:true file; `Null
+    | "textDocument/didSave" ->
+        let file = file () in
+        let* () = if in_project file then refresh ~reload:true file else return () in
+        return `Null
     | "textDocument/didClose" ->
         let file = file () in
-        if in_project file then begin buffers := Files.remove file !buffers; versions := Files.remove file !versions; refresh ~reload:true file end;
-        `Null
+        let* () = if in_project file then begin
+          buffers := Files.remove file !buffers;
+          versions := Files.remove file !versions;
+          refresh ~reload:true file
+        end else return () in
+        return `Null
     | "workspace/symbol" | "textDocument/completion" ->
         (match !snapshot with
-         | None -> `List []
+         | None -> return (`List [])
          | Some (sources, obs) ->
              let query = match member "query" params with `String q -> String.lowercase_ascii q | _ -> "" in
              let edit =
@@ -185,8 +193,8 @@ let serve workspace =
                else None) in
              match edit with
              | Some (kind, _, _) when kind <> "<<" ->
-                 obj ["isIncomplete", `Bool true; "items", `List items]
-             | _ -> `List items)
+                 return (obj ["isIncomplete", `Bool true; "items", `List items])
+             | _ -> return (`List items))
     | "textDocument/hover" | "textDocument/definition" | "textDocument/references" ->
         let file = file () in
         (match !snapshot with
@@ -194,46 +202,44 @@ let serve workspace =
              let at = Option.bind (Files.find_opt file sources) (fun source ->
                offset source (member "position" params)) in
              (match Option.bind at (target_at obs file) with
-              | None -> `Null
+              | None -> return `Null
               | Some id when method_ = "textDocument/hover" ->
-                  (match title obs id with None -> `Null | Some label ->
+                  return (match title obs id with None -> `Null | Some label ->
                     obj ["contents", obj ["kind", str "plaintext"; "value", str (label ^ "\n" ^ id_name id)]])
-              | Some id when method_ = "textDocument/definition" -> locations sources (definition_spans obs id)
-              | Some id ->
+              | Some id when method_ = "textDocument/definition" -> return (locations sources (definition_spans obs id))
+              | Some id when method_ = "textDocument/references" ->
                   let declarations =
                     if params |> member "context" |> member "includeDeclaration" = `Bool true
                     then definition_spans obs id else [] in
                   let references = O.references_to obs id |> List.filter_map (fun (r : _ O.reference) -> r.target.span) in
-                  locations sources (declarations @ references))
-         | None -> `Null)
+                  return (locations sources (declarations @ references))
+              | Some _ -> return `Null)
+         | None -> return `Null)
     | _ -> raise Not_found
   in
   let handle msg =
     let id = member "id" msg in
-    let respond fields = if id <> `Null then send (("id", id) :: fields) in
+    let respond fields = if id = `Null then return () else send (("id", id) :: fields) in
     let error code message =
-      if id = `Null then prerr_endline message
+      if id = `Null then (prerr_endline message; return ())
       else respond ["error", obj ["code", `Int code; "message", str message]] in
-    try respond ["result", request (to_string (member "method" msg)) (member "params" msg)] with
-    | Not_found -> if id <> `Null then error (-32601) "Method not found"
-    | Type_error (message, _) | Invalid_argument message -> error (-32602) message
-    | Sys_error message -> error (-32603) message
-    | Unix.Unix_error (code, _, path) -> error (-32603) (path ^ ": " ^ Unix.error_message code)
+    Lwt.catch (fun () ->
+      let* result = request (to_string (member "method" msg)) (member "params" msg) in
+      respond ["result", result]) (function
+      | Not_found -> if id = `Null then return () else error (-32601) "Method not found"
+      | Type_error (message, _) | Invalid_argument message -> error (-32602) message
+      | Failure message | Sys_error message -> error (-32603) message
+      | Unix.Unix_error (code, _, path) -> error (-32603) (path ^ ": " ^ Unix.error_message code)
+      | exn -> Lwt.fail exn)
   in
-  let rec headers length =
-    let line = String.trim (input_line stdin) in
-    if line = "" then length
-    else match String.index_opt line ':' with
-      | Some i when String.lowercase_ascii (String.sub line 0 i) = "content-length" ->
-          headers (int_of_string (String.trim (String.sub line (i + 1) (String.length line - i - 1))))
-      | _ -> headers length
-  in
-  try while true do
-    let length = headers 0 in
-    handle (Yojson.Safe.from_string (really_input_string stdin length))
-  done with End_of_file -> ()
+  let rec loop () =
+    let* msg = receive Lwt_io.stdin in
+    let* () = handle msg in
+    loop () in
+  Lwt.finalize (fun () -> Lwt.catch loop (function End_of_file -> return () | exn -> Lwt.fail exn))
+    (fun () -> if Lazy.is_val workspace_projection then Lit_ocaml.stop (Lazy.force workspace_projection) else return ())
 
 let () =
   match Array.to_list Sys.argv with
-  | [_; workspace] -> serve (Unix.realpath workspace)
+  | [_; workspace] -> Lwt_main.run (serve (Unix.realpath workspace))
   | _ -> prerr_endline "usage: lit_lsp WORKSPACE"; exit 1
