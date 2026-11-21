@@ -30,7 +30,6 @@ type node =
 type context = value Card.context
 
 let values = Value.rules
-
 let identities =
   Identity_rules.empty
   |> Identity_rules.register ~name:"meta-id" (fun (h : heading Provenance.located) ->
@@ -50,9 +49,6 @@ let identities =
                    Rules.Invalid [ Frontend.Diagnostic.make ?span:h.span
                      (Missing_identity { insertion = Some insertion; prefix = "id = \""; suffix = "\"\n" }) ]
                | _ -> Rules.Invalid diagnostics)
-
-(* {1 Scanning} *)
-
 let span file start stop = { Provenance.file; start; stop }
 let at file text start stop =
   Provenance.located ~span:(span file start stop) (String.sub text start (stop - start))
@@ -69,7 +65,6 @@ let run text pos stop c =
   !i - pos
 let blank text pos stop = String.trim (String.sub text pos (stop - pos)) = ""
 
-(* A fence opening at [pos]: its marker, length and info string. *)
 let fence text pos e =
   let s = indent text pos e in
   if s >= e then None
@@ -80,7 +75,6 @@ let fence text pos e =
       Some (c, n, String.trim (String.sub text (s + n) (e - s - n)))
     else None
 
-(* The line after the closing fence, and the closing line's start. *)
 let fence_close text (c, n) from stop =
   let rec go pos =
     if pos >= stop then stop, stop
@@ -92,7 +86,6 @@ let fence_close text (c, n) from stop =
       else go (next_line text pos)
   in
   go from
-
 let directive_open text pos e =
   let s = indent text pos e in
   let n = run text s e ':' in
@@ -111,8 +104,6 @@ let directive_close text pos e =
   let n = run text s e ':' in
   n >= 3 && blank text (s + n) e
 
-(* The matching close line of a directive opened before [from], skipping
-   fences. An unclosed directive runs to the end of the region. *)
 let directive_end text from stop =
   let rec go pos depth =
     if pos >= stop then Some (stop, stop)
@@ -129,7 +120,6 @@ let directive_end text from stop =
   go from 0
 
 let toml ~file text start stop = Toml.parse ~file text ~start ~stop
-
 let rec region ~file ~headings text start stop =
   let heads = ref [] and nodes = ref [] in
   let rec go pos =
@@ -215,13 +205,11 @@ let rec region ~file ~headings text start stop =
   in
   go start;
   List.rev !heads, List.rev !nodes
-
 let scan ~file text ~start =
   let headings, nodes = region ~file ~headings:true text start (String.length text) in
   { Card.headings; nodes; closes = [] }
 
 let children = function Directive { inner; _ } -> inner | Card _ -> []
-
 let actions =
   Action_rules.empty
   |> Action_rules.register ~sugar:"named-directive" (fun node (context : context) ->
@@ -238,14 +226,12 @@ let actions =
                   { Action_rules.call = Provenance.located ?span:node.span call; taken = node.span }
             | Error errors -> Rules.Invalid errors)
        | _ -> Rules.No_match)
-
 let adapter ?(values = values) ?(identities = identities) ?(actions = actions)
     ?(define = "define") frontend =
   Card.adapter
     { Card.language; source = Fun.id; scan = (fun ~file text -> scan ~file text ~start:0);
       read = scan; nested = (fun n -> Card n); children }
     ~values ~identities ~actions ~define frontend
-
 module Sugar = struct
   let nested_card action make =
     Card.nested_card (function Card n -> Some n | _ -> None) action make
