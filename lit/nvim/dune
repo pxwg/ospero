@@ -1,4 +1,5 @@
 (executable
  (name lit_lsp)
+ (modules lit_lsp)
  (optional)
- (libraries ospero yojson uri unix str))
+ (libraries lit_engine ospero yojson uri unix str))

@@ -1,1 +1,7 @@
-(data_only_dirs notes out)
+(data_only_dirs notes out reader)
+
+(executable
+ (name lit)
+ (modules lit lit_reader)
+ (optional)
+ (libraries lit_engine ospero unix str yojson))

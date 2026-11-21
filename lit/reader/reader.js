@@ -32,7 +32,33 @@ function layout() {
   });
 }
 
+const home = stack.querySelector("article").cloneNode(true);
+
+function loadEmbeds(container, ancestors) {
+  container.querySelectorAll("details[data-embed]").forEach(detail => {
+    const id = detail.dataset.embed;
+    const source = id === "home" ? home : cards.get(id)?.content.firstElementChild;
+    if (!source) return;
+    if (ancestors.has(id)) {
+      const link = document.createElement("a");
+      link.href = "#stack=" + id;
+      link.dataset.card = id;
+      link.textContent = "打开卡片";
+      detail.append(link);
+      return;
+    }
+    detail.addEventListener("toggle", () => {
+      if (!detail.open || detail.children.length > 1) return;
+      const article = source.cloneNode(true);
+      article.querySelector("h1")?.remove();
+      loadEmbeds(article, new Set([...ancestors, id]));
+      detail.append(article);
+    });
+  });
+}
+
 function decorate(pane) {
+  loadEmbeds(pane, new Set([pane.dataset.node]));
   const spine = document.createElement("button");
   spine.className = "zk-spine";
   spine.textContent = pane.querySelector("h1").textContent;
@@ -61,7 +87,7 @@ function restore() {
   if (!wide.matches) window.scrollTo(0, 0);
   const block = route.get("block");
   if (block) {
-    const detail = last.querySelector('[data-block="' + CSS.escape(block) + '"]');
+    const detail = last.querySelector('details[data-block="' + CSS.escape(block) + '"]');
     if (detail) { detail.open = true; detail.scrollIntoView({block: "nearest"}); }
   }
 }

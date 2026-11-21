@@ -1,0 +1,85 @@
+#import "/reader/book.typ": chunk
+
+= clone.ml <core:src:clone.ml>
+
+#chunk(id: <source-core-src-clone-ml>)[
+```ocaml
+type 'a operation = {
+  arity : int;
+  implementation : 'a list -> 'a;
+}
+
+type 'a morphism = {
+  arity : int;
+  outputs : int;
+  implementation : 'a list -> 'a list;
+}
+
+let require_arity n =
+  if n < 0 then invalid_arg "Clone arity must be non-negative"
+
+let operation arity implementation =
+  require_arity arity;
+  { arity; implementation }
+
+let arity (operation : _ operation) = operation.arity
+
+let run (operation : _ operation) arguments =
+  if List.length arguments <> operation.arity then
+    invalid_arg "Clone operation input count mismatch";
+  operation.implementation arguments
+
+let projection arity index =
+  require_arity arity;
+  if index < 0 || index >= arity then
+    invalid_arg "Clone projection index outside input context";
+  operation arity (fun arguments -> List.nth arguments index)
+
+let tuple arity operations =
+  require_arity arity;
+  if not (List.for_all (fun (op : _ operation) -> op.arity = arity) operations) then
+    invalid_arg "Clone tuple outputs must share an input arity";
+  {
+    arity;
+    outputs = List.length operations;
+    implementation = (fun arguments ->
+      List.map (fun op -> run op arguments) operations);
+  }
+
+let source (morphism : _ morphism) = morphism.arity
+let target morphism = morphism.outputs
+
+let apply (morphism : _ morphism) arguments =
+  if List.length arguments <> morphism.arity then
+    invalid_arg "Clone morphism input count mismatch";
+  morphism.implementation arguments
+
+let bind (outer : _ operation) substitutions =
+  if target substitutions <> outer.arity then
+    invalid_arg "Clone substitution output count mismatch";
+  operation (source substitutions) (fun arguments ->
+    let intermediate = apply substitutions arguments in
+    run outer intermediate)
+
+let identity arity =
+  require_arity arity;
+  { arity; outputs = arity; implementation = Fun.id }
+
+let compose ~after ~before =
+  if target before <> source after then
+    invalid_arg "Clone composition dimension mismatch";
+  {
+    arity = source before;
+    outputs = target after;
+    implementation = (fun arguments ->
+      let intermediate = apply before arguments in
+      apply after intermediate);
+  }
+```
+]
+
+#chunk(id: <file-core-src-clone-ml>, target: "core/src/clone.ml")[
+```ocaml
+<<source-core-src-clone-ml>>
+```
+]

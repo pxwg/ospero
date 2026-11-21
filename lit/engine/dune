@@ -1,0 +1,4 @@
+(library
+ (name lit_engine)
+ (wrapped false)
+ (libraries ospero unix str))

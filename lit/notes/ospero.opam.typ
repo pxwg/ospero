@@ -1,0 +1,36 @@
+#import "/reader/book.typ": chunk
+
+= ospero.opam <ospero.opam>
+
+#chunk(id: <source-ospero-opam>)[
+```opam
+opam-version: "2.0"
+version: "0.1.0"
+synopsis: "Knowledge graphs, observations and policy evaluation for Ospero"
+description: """
+An OCaml library for knowledge graphs.
+"""
+maintainer: "Xinyu Xiang <xiangxy23@mails.tsinghua.edu.cn>"
+authors: "Xinyu Xiang"
+license: "MIT"
+homepage: "https://github.com/pxwg/ospero"
+bug-reports: "https://github.com/pxwg/ospero/issues"
+dev-repo: "git+https://github.com/pxwg/ospero.git"
+depends: [
+  "ocaml" {>= "5.5.1"}
+  "dune" {>= "3.24.2"}
+]
+build: [
+  ["dune" "build" "--root" "." "--only-packages" name "--profile" "release" "-j" jobs "@install"]
+]
+install: [
+  ["dune" "install" "--root" "." "--prefix" prefix "--libdir" lib name]
+]
+```
+]
+
+#chunk(id: <file-ospero-opam>, target: "ospero.opam")[
+```opam
+<<source-ospero-opam>>
+```
+]

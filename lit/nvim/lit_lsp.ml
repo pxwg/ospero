@@ -2,8 +2,6 @@ open Ospero.Core
 open Lit_model
 open Yojson.Safe.Util
 
-module Files = Map.Make (String)
-
 let obj fields = `Assoc fields
 let str text = `String text
 let uri file = Uri.make ~scheme:"file" ~host:"" ~path:file () |> Uri.to_string
@@ -41,98 +39,80 @@ let locations sources spans =
     Files.find_opt span.file sources |> Option.map (fun source ->
       obj ["uri", str (uri span.file); "range", range source span])) spans)
 
-let definition_spans obs id =
-  O.definitions obs id |> List.filter_map (fun (d : _ O.definition) ->
-    if d.rejected = [] then d.id.span else None)
+let contains file at = function
+  | Some (span : P.span) -> span.file = file && span.start <= at && at < span.stop
+  | None -> false
 
-let target_at obs links file at =
-  let contains = function
-    | Some (span : P.span) -> span.file = file && span.start <= at && at < span.stop
-    | None -> false in
-  match List.find_opt (fun (r : Prose.link) -> contains (Some r.span)) links with
-  | Some r -> Some r.target
-  | None ->
-  let in_include (r : _ O.reference) = match r.target.span with
-    | Some span -> span.file = file && span.start - 2 <= at && at < span.stop + 2
-    | None -> false in
-  match List.find_opt in_include (O.references obs) with
+let target_at obs file at =
+  let contains = contains file at in
+  let reference_span (r : _ O.reference) =
+    match r.edges, r.target.span with
+    | [{ Graph.relation = Splice; _ }], Some span ->
+        Some { span with start = span.start - 2; stop = span.stop + 2 }
+    | _ -> r.call in
+  match List.find_opt (fun r -> contains (reference_span r)) (O.references obs) with
   | Some r -> Some r.target.value
   | None -> O.all_definitions obs |> List.find_map (fun (d : _ O.definition) ->
       if contains d.id.span then Some d.id.value else None)
+
+let title_spans obs file source =
+  O.references obs |> List.filter_map (fun (r : _ O.reference) ->
+    match r.edges, r.call, r.target.span, title obs r.target.value with
+    | [{ Graph.relation = Link; _ }], Some span, Some target, Some label
+      when span.file = file && source.[span.start] = '@' ->
+        let written = String.sub source span.start (span.stop - span.start) in
+        let label =
+          if target.stop + 2 < span.stop && source.[target.stop] = '[' then
+            String.sub source (target.stop + 1) (span.stop - target.stop - 2)
+          else label in
+        Some (obj ["range", range source span; "source", str written; "label", str label])
+    | _ -> None)
 
 let publish file diagnostics =
   send ["method", str "textDocument/publishDiagnostics";
         "params", obj ["uri", str (uri file); "diagnostics", `List diagnostics]]
 
-let title obs id =
-  Option.map (fun v -> v.Graph.note.Graph.title.Text.text) (Graph.find_vertex (O.graph obs) id)
-
 let serve workspace =
-  let directory = Filename.concat workspace "notes" in
   let buffers = ref Files.empty and published = ref Files.empty in
   let snapshot = ref None in
-  let guide = Filename.concat workspace "index.org" in
-  let is_card file = String.starts_with ~prefix:(directory ^ "/") file && Filename.check_suffix file ".org" in
-  let in_project file = file = guide || is_card file in
+  let in_project = is_source workspace in
   let versions = ref Files.empty in
-  let refresh file =
-    let rec read_directory sources dir =
-      Array.fold_left (fun sources name ->
-        let file = Filename.concat dir name in
-        match Unix.lstat file with
-        | { st_kind = Unix.S_DIR; _ } -> read_directory sources file
-        | { st_kind = Unix.S_REG; _ } when is_card file && not (Files.mem file sources) ->
-            Files.add file (read file) sources
-        | _ -> sources
-        | exception Unix.Unix_error (Unix.ENOENT, _, _) -> sources)
-        sources (Sys.readdir dir) in
-    let sources = read_directory !buffers directory in
-    let sources = if Files.mem guide sources || not (Sys.file_exists guide) then sources
-      else Files.add guide (read guide) sources in
-    let docs = Files.bindings sources |> List.filter_map (fun (file, native) ->
-      if is_card file then Some { Syntax.file; language = Org.language; native } else None) in
-    let obs, diagnostics = observe docs in
-    let by_file = Files.mapi Prose.links sources in
-    let links = List.concat_map snd (Files.bindings by_file) in
-    snapshot := Some (sources, obs, links);
+  let disk = ref Files.empty in
+  let parsed = ref Files.empty in
+  let refresh ?(reload = false) file =
+    if reload then disk := sources workspace;
+    let sources = Files.union (fun _ _ buffer -> Some buffer) !disk !buffers in
+    parsed := Files.mapi (fun file source ->
+      match Files.find_opt file !parsed with
+      | Some (previous, batch) when previous = source -> previous, batch
+      | _ -> source, parse_source file source) sources;
+    let obs, diagnostics = observe_parsed (Files.map snd !parsed) in
+    snapshot := Some (sources, obs);
     Files.iter (fun file source ->
-      let spans = Files.find file by_file |> List.filter_map (fun (link : Prose.link) ->
-        title obs link.target |> Option.map (fun title ->
-          obj ["range", range source link.span;
-               "source", str (String.sub source link.span.start (link.span.stop - link.span.start)); "label", str (Option.value link.label ~default:title)])) in
       send ["method", str "ospero/titles"; "params", obj ["uri", str (uri file);
-            "version", Files.find file !versions; "spans", `List spans]]) !buffers;
-    let problems = List.map (fun (d : Frontend.Diagnostic.t) -> d.span, diagnostic_text d) diagnostics
-      @ List.concat_map issue_messages (O.issues obs) in
-    let problems =
-      if problems <> [] then problems
-      else try ignore (validate (code_cards obs)); [] with
-      | Invalid_code (id, message) -> [List.nth_opt (definition_spans obs id) 0, message] in
-    let missing = List.filter_map (fun (link : Prose.link) ->
-      if Option.is_some (title obs link.target) then None
-      else Some (Some link.span, "无法确定引用目标 " ^ id_name link.target)) links in
+            "version", Files.find file !versions; "spans", `List (title_spans obs file source)]]) !buffers;
     let entries = List.fold_left (fun entries (span, message) ->
       let span = Option.value span ~default:{ P.file; start = 0; stop = 0 } in
       let source = Files.find_opt span.file sources |> Option.value ~default:"" in
       let diagnostic = obj ["range", range source span; "message", str message;
                             "severity", `Int 1; "source", str "ospero-lit"] in
       Files.update span.file (fun prev -> Some (diagnostic :: Option.value prev ~default:[])) entries)
-      Files.empty (missing @ problems) in
+      Files.empty (problems obs diagnostics) in
     Files.iter (fun file _ -> if not (Files.mem file entries) then publish file []) !published;
     Files.iter (fun file diagnostics -> publish file (List.rev diagnostics)) entries;
     published := entries
   in
+  let update ~reload document text =
+    let file = path (to_string (member "uri" document)) in
+    if in_project file then begin
+      versions := Files.add file (member "version" document) !versions;
+      buffers := Files.add file (text ()) !buffers;
+      refresh ~reload file
+    end;
+    `Null in
   let request method_ params =
     let document () = member "textDocument" params in
     let file () = path (to_string (member "uri" (document ()))) in
-    let update text =
-      let file = file () in
-      if in_project file then begin
-        versions := Files.add file (member "version" (document ())) !versions;
-        buffers := Files.add file (text ()) !buffers;
-        refresh file
-      end;
-      `Null in
     match method_ with
     | "initialize" ->
         let encodings = params |> member "capabilities" |> member "general" |> member "positionEncodings" in
@@ -141,21 +121,21 @@ let serve workspace =
         obj ["capabilities", obj ["positionEncoding", str "utf-8";
           "textDocumentSync", obj ["openClose", `Bool true; "change", `Int 1; "save", `Bool true];
           "hoverProvider", `Bool true; "workspaceSymbolProvider", `Bool true;
-          "completionProvider", obj ["triggerCharacters", `List [str ":"; str "<"]];
+          "completionProvider", obj ["triggerCharacters", `List [str "@"; str "<"]];
           "definitionProvider", `Bool true; "referencesProvider", `Bool true]]
     | "shutdown" -> `Null
     | "exit" -> exit 0
-    | "textDocument/didOpen" -> update (fun () -> document () |> member "text" |> to_string)
-    | "textDocument/didChange" -> update (fun () -> params |> member "contentChanges" |> index 0 |> member "text" |> to_string)
-    | "textDocument/didSave" -> let file = file () in if in_project file then refresh file; `Null
+    | "textDocument/didOpen" -> update ~reload:true (document ()) (fun () -> document () |> member "text" |> to_string)
+    | "textDocument/didChange" -> update ~reload:false (document ()) (fun () -> params |> member "contentChanges" |> index 0 |> member "text" |> to_string)
+    | "textDocument/didSave" -> let file = file () in if in_project file then refresh ~reload:true file; `Null
     | "textDocument/didClose" ->
         let file = file () in
-        if in_project file then begin buffers := Files.remove file !buffers; versions := Files.remove file !versions; refresh file end;
+        if in_project file then begin buffers := Files.remove file !buffers; versions := Files.remove file !versions; refresh ~reload:true file end;
         `Null
     | "workspace/symbol" | "textDocument/completion" ->
         (match !snapshot with
          | None -> `List []
-         | Some (sources, obs, _) ->
+         | Some (sources, obs) ->
              let query = match member "query" params with `String q -> String.lowercase_ascii q | _ -> "" in
              let edit =
                if method_ <> "textDocument/completion" then None else
@@ -165,7 +145,7 @@ let serve workspace =
                    let start = match String.rindex_from_opt source (stop - 1) '\n' with
                      | Some newline -> newline + 1 | None -> 0 in
                    let prefix = String.sub source start (stop - start) in
-                   let context = Str.regexp {|\(\[\[id:\|\[\[include:\|<<\)\([^][<>]*\)$|} in
+                   let context = Str.regexp {|\(@\|<<\)\([^][<>@]*\)$|} in
                    match Str.search_forward context prefix 0 with
                    | exception Not_found -> None
                    | _ ->
@@ -186,7 +166,7 @@ let serve workspace =
                   | Some (kind, typed, range), Ok metadata
                     when (String.starts_with ~prefix:typed name || (kind <> "<<" && matches label))
                       && (kind <> "<<" || Option.is_some metadata)
-                      && (kind <> "[[include:" || Option.is_none metadata) ->
+                      ->
                       let display =
                         if kind = "<<" then ["label", str name; "detail", str label]
                         else ["label", str label; "detail", str name;
@@ -210,10 +190,10 @@ let serve workspace =
     | "textDocument/hover" | "textDocument/definition" | "textDocument/references" ->
         let file = file () in
         (match !snapshot with
-         | Some (sources, obs, links) ->
+         | Some (sources, obs) ->
              let at = Option.bind (Files.find_opt file sources) (fun source ->
                offset source (member "position" params)) in
-             (match Option.bind at (target_at obs links file) with
+             (match Option.bind at (target_at obs file) with
               | None -> `Null
               | Some id when method_ = "textDocument/hover" ->
                   (match title obs id with None -> `Null | Some label ->
@@ -224,9 +204,7 @@ let serve workspace =
                     if params |> member "context" |> member "includeDeclaration" = `Bool true
                     then definition_spans obs id else [] in
                   let references = O.references_to obs id |> List.filter_map (fun (r : _ O.reference) -> r.target.span) in
-                  let prose = List.filter_map (fun (link : Prose.link) ->
-                    if link.target = id then Some link.span else None) links in
-                  locations sources (declarations @ prose @ references))
+                  locations sources (declarations @ references))
          | None -> `Null)
     | _ -> raise Not_found
   in

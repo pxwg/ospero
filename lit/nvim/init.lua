@@ -4,19 +4,49 @@ return function(root)
   local module = "ospero-lit.titles:" .. root
   local titles = package.loaded[module] or dofile(root .. "/nvim/titles.lua")
   package.loaded[module] = titles
-  local org_module = "ospero-lit.org:" .. root
-  local org_highlights = package.loaded[org_module] or dofile(root .. "/nvim/org.lua")
-  package.loaded[org_module] = org_highlights
   local notes = root .. "/notes"
   local function belongs(buf)
     local file = vim.api.nvim_buf_get_name(buf)
     return vim.bo[buf].buftype == ""
-      and (file == root .. "/index.org" or (vim.startswith(file, notes .. "/") and vim.endswith(file, ".org")))
+      and (file == root .. "/index.typ" or (vim.startswith(file, notes .. "/") and vim.endswith(file, ".typ")))
+  end
+
+  local function owns_tinymist(client)
+    return client.config._ospero_lit_root == root
+  end
+
+  local function start_tinymist(buf)
+    if vim.fn.executable("tinymist") ~= 1 then
+      return
+    end
+    local settings = {
+      rootPath = root,
+      projectResolution = "singleFile",
+      exportPdf = "never",
+      typstExtraArgs = { "--root", root },
+    }
+    local id = vim.lsp.start({
+      name = "tinymist",
+      cmd = { "tinymist" },
+      root_dir = root,
+      _ospero_lit_root = root,
+      settings = settings,
+      init_options = settings,
+    }, { bufnr = buf, reuse_client = owns_tinymist })
+    if id then
+      for _, client in ipairs(vim.lsp.get_clients({ bufnr = buf, name = "tinymist" })) do
+        if not owns_tinymist(client) then
+          vim.lsp.buf_detach_client(buf, client.id)
+          vim.diagnostic.reset(vim.lsp.diagnostic.get_namespace(client.id), buf)
+          vim.diagnostic.reset(vim.lsp.diagnostic.get_namespace(client.id, true), buf)
+        end
+      end
+    end
   end
 
   local function new_card()
     vim.ui.input({ prompt = "文件名: " }, function(name)
-      name = vim.trim(name or ""):gsub("%.org$", "")
+      name = vim.trim(name or ""):gsub("%.typ$", "")
       if name == "" then
         return
       end
@@ -35,8 +65,8 @@ return function(root)
         if title:find("[\r\n]") then
           return vim.notify("标题必须为单行", vim.log.levels.ERROR)
         end
-        local file = notes .. "/" .. name .. ".org"
-        local text = ("* %s\n:PROPERTIES:\n:ID: %s\n:END:\n\n"):format(title, name)
+        local file = notes .. "/" .. name .. ".typ"
+        local text = ("= %s <%s>\n\n"):format(title, name)
         local fd, err = vim.uv.fs_open(file, "wx", 438)
         if not fd then
           return vim.notify(err, vim.log.levels.ERROR)
@@ -48,7 +78,7 @@ return function(root)
           return vim.notify(write_err or close_err or "未能写入完整卡片", vim.log.levels.ERROR)
         end
         vim.cmd.edit({ args = { file } })
-        vim.api.nvim_win_set_cursor(0, { 5, 0 })
+        vim.api.nvim_win_set_cursor(0, { 2, 0 })
       end)
     end)
   end
@@ -57,13 +87,11 @@ return function(root)
     if not belongs(buf) then
       return
     end
+    start_tinymist(buf)
+    -- Clear the command left by an earlier version when reloading this exrc.
+    pcall(vim.api.nvim_buf_del_user_command, buf, "LitWeave")
     vim.api.nvim_buf_create_user_command(buf, "LitNew", new_card, { force = true })
     vim.keymap.set("n", "<leader>zn", new_card, { buffer = buf, desc = "新建文学卡片" })
-    vim.schedule(function()
-      if vim.api.nvim_buf_is_loaded(buf) then
-        org_highlights(buf)
-      end
-    end)
     local client = vim.lsp.start({
       name = "ospero-lit",
       root_dir = root,
@@ -81,8 +109,9 @@ return function(root)
         root,
       },
       get_language_id = function()
-        return "org"
+        return "typst"
       end,
+      flags = { debounce_text_changes = 180 },
       handlers = {
         ["ospero/titles"] = function(_, params)
           local target = vim.uri_to_bufnr(params.uri)
@@ -143,11 +172,8 @@ return function(root)
         )
       end, { force = true })
     end
-    command("LitTangle", { "python3", root .. "/seed.py", "tangle" }, function()
+    command("LitTangle", { root .. "/build", "tangle" }, function()
       vim.notify("已生成 " .. root .. "/out/")
-    end)
-    command("LitWeave", { "emacs", "-Q", "--batch", "-l", root .. "/reader/export.el" }, function()
-      vim.ui.open(root .. "/index.html")
     end)
   end
 
@@ -159,14 +185,27 @@ return function(root)
         if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
           vim.wo[win].conceallevel = 2
           vim.wo[win].concealcursor = "nvic"
-          org_highlights(buf)
         end
       end)
     end
   end
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = group,
+    callback = function(e)
+      local client = vim.lsp.get_client_by_id(e.data.client_id)
+      if not client or client.name ~= "tinymist" or not belongs(e.buf) or owns_tinymist(client) then
+        return
+      end
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_loaded(e.buf) then
+          start_tinymist(e.buf)
+        end
+      end)
+    end,
+  })
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
     group = group,
-    pattern = "*.org",
+    pattern = "*.typ",
     callback = function(e)
       attach(e.buf)
     end,

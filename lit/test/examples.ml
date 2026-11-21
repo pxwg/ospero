@@ -23,6 +23,19 @@ let two_ports_share_one_intermediate () =
   assert (Clone.apply (Clone.compose ~before ~after) [3] = [4; 4]);
   assert (!calls = 1)
 
+let empty_typst_supplement_uses_default () =
+  let module Typst = Ospero.Syntax.Lang.Typst in
+  let source = "@b @b[]后 @b[别名]" in
+  let scan = Typst.scan ~file:"references.typ" source in
+  let references = List.filter_map (fun (node : _ Provenance.located) ->
+    match node.value, node.span with
+    | Typst.Reference { target; supplement }, Some span ->
+        Some (target.value, Option.map (fun (text : Text.t Provenance.located) -> text.value.text) supplement,
+              String.sub source span.start (span.stop - span.start))
+    | _ -> None) scan.nodes in
+  assert (references = ["b", None, "@b"; "b", None, "@b[]"; "b", Some "别名", "@b[别名]"])
+
 let () =
+  empty_typst_supplement_uses_default ();
   parallel_edges_survive_mapping ();
   two_ports_share_one_intermediate ()
