@@ -41,7 +41,7 @@ type node =
   | Reference of {
       target : string Provenance.located;
       supplement : Text.t Provenance.located option;
-          (** [@b\[shown\]]; an empty [\[\]] differs from none. *)
+          (** Omitted and empty supplements are both [None]. *)
     }
   | Card of Card.nested
   | Label of string  (** [<name>] in markup, a heading's own included. *)

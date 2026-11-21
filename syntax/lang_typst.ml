@@ -232,11 +232,12 @@ and markup st ~top i =
   and reference i =
     let j = span_while st (i + 1) is_label in
     let j = let j = ref j in while !j > i + 1 && (st.text.[!j - 1] = '.' || st.text.[!j - 1] = ':') do decr j done; !j in
-    (* [@b\[shown\]]: the supplement is kept with the reference it labels. *)
+    (* Empty brackets delimit the target without overriding its default label. *)
     let supplement, stop =
       if char st j = '[' then
         let q, _ = markup st ~top:false (j + 1) in
-        Some (content_text st (j + 1) q), min st.len (q + 1)
+        let supplement = if q = j + 1 then None else Some (content_text st (j + 1) q) in
+        supplement, min st.len (q + 1)
       else None, j
     in
     add (Provenance.located ~span:(span st i stop)
