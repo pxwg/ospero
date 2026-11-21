@@ -32,15 +32,11 @@ type node =
   | Card of Card.nested
 
 type context = value Card.context
-
-(* {1 Text helpers} *)
-
 let is_space = function ' ' | '\t' | '\r' -> true | _ -> false
 let span file start stop = { Provenance.file; start; stop }
 let at file text start stop =
   Provenance.located ~span:(span file start stop) (String.sub text start (stop - start))
 
-(* Shrink [start, stop) past surrounding blanks. *)
 let trim text start stop =
   let start = ref start and stop = ref stop in
   while !start < !stop && (is_space text.[!start] || text.[!start] = '\n') do incr start done;
@@ -60,18 +56,12 @@ let skip_blank text pos stop =
   let p = ref pos in
   while !p < stop && is_space text.[!p] do incr p done;
   !p
-
-(* {1 Located values} *)
-
-(* A value relocated inside its own text, for list elements and arguments. *)
 let sub (v : value Provenance.located) start stop =
   let base = match v.span with Some s -> s.start | None -> 0 in
   let span = Option.map (fun (s : Provenance.span) ->
     { s with start = base + start; stop = base + stop }) v.span in
   Provenance.located ?span (String.sub v.value start (stop - start))
 
-(* Positions in [s] where a top-level separator stands: outside quotes and
-   brackets. *)
 let split_top ~separator s =
   let pieces = ref [] and depth = ref 0 and quoted = ref false and from = ref 0 in
   String.iteri (fun i c ->
@@ -96,7 +86,6 @@ let unquote s =
     done;
     Some (Buffer.contents b)
   end else None
-
 let values =
   let open Payload_rules in
   let scalar read (v : value Provenance.located) _ =
@@ -104,7 +93,6 @@ let values =
     | Some x -> Rules.Matched { v with value = x }
     | None -> Rules.No_match
   in
-  (* Bracketed elements are separated by commas, bare ones by spaces. *)
   let items (v : value Provenance.located) =
     let s = v.value in
     let start, stop = trim s 0 (String.length s) in
@@ -128,8 +116,6 @@ let values =
   |> register ~name:"bool" ~value:Syntax.Args.bool
        (scalar (function "true" -> Some true | "false" -> Some false | _ -> None))
   |> register_items ~name:"list" items
-
-(* [:key value] pairs; a value runs to the next top-level [:key]. *)
 let arguments (v : value Provenance.located) =
   let s = v.value in
   let keys =
@@ -149,7 +135,6 @@ let arguments (v : value Provenance.located) =
         { Payload_rules.name = sub v (a + 1) b; value = sub v va vb } :: fields rest
   in
   match leading with [] -> Ok (fields keys) | errors -> Error errors
-
 let identities =
   Identity_rules.empty
   |> Identity_rules.register ~name:"id-property" (fun (h : heading Provenance.located) ->
@@ -160,9 +145,6 @@ let identities =
            match Graph.Vertex_id.of_string (String.trim v.value) with
            | Ok id -> Rules.Matched { v with value = id }
            | Error message -> Rules.Invalid [ Card.invalid ?span:v.span message ])
-
-(* {1 Scanning} *)
-
 let links file text start stop =
   let rec go pos acc =
     match String.index_from_opt text pos '[' with
@@ -189,8 +171,6 @@ let links file text start stop =
 
 let verbatim = [ "src"; "example"; "export"; "comment" ]
 
-(* Read [#+begin_name params]; return the name span, the parameters span and
-   the start of the line after the matching end line, if any. *)
 let block_end text name from stop =
   let close = "#+end_" ^ String.lowercase_ascii name in
   let rec go pos =
@@ -209,11 +189,6 @@ let keyword_name text pos stop =
   let i = ref pos in
   while !i < stop && not (is_space text.[!i]) && text.[!i] <> ':' do incr i done;
   !i
-
-(* Blocks, keywords and links of a region. Headings are reported only at the
-   top level. *)
-(* Org's task keywords: those of the file's [#+TODO:] sequences, else TODO
-   and DONE. Shortcut keys such as [(t)] and the [|] separator are not words. *)
 let todo_keywords text =
   let sequence line =
     List.find_map (fun key ->
@@ -232,7 +207,6 @@ let todo_keywords text =
   | [] -> [ "TODO"; "DONE" ]
   | sequences -> List.concat_map words sequences
 
-(* Skip a task keyword and a priority cookie such as [\[#A\]] before a title. *)
 let after_task ~keywords text start stop =
   let word_end = ref start in
   while !word_end < stop && not (is_space text.[!word_end]) do incr word_end done;
@@ -244,7 +218,6 @@ let after_task ~keywords text start stop =
   if start + 4 <= stop && String.sub text start 2 = "[#" && text.[start + 3] = ']' then
     skip_blank text (start + 4) stop
   else start
-
 let rec region ~file ~headings ~keywords text start stop =
   let heads = ref [] and nodes = ref [] in
   let add n = nodes := n :: !nodes in
@@ -257,7 +230,6 @@ let rec region ~file ~headings ~keywords text start stop =
       if headings && stars > 0 && pos + stars < e && text.[pos + stars] = ' ' then
         go (if commented pos e stars then subtree_end pos stars else heading pos e stars)
       else if s < e && text.[s] = '#' && (s + 1 = e || text.[s + 1] = ' ') then
-        (* A comment line is not read. *)
         go (next_line text pos)
       else if prefixed ~prefix:"#+begin_" text s e then begin
         let n0 = s + 8 in
@@ -292,7 +264,6 @@ let rec region ~file ~headings ~keywords text start stop =
         go (next_line text pos)
       end
       else (List.iter add (links file text s e); go (next_line text pos))
-  (* A COMMENT heading and its subtree are commented out, as Org exports them. *)
   and commented pos e stars =
     let t0 = after_task ~keywords text (skip_blank text (pos + stars) e) e in
     prefixed ~prefix:"comment" text t0 e && (t0 + 7 = e || is_space text.[t0 + 7])
@@ -360,7 +331,6 @@ let rec region ~file ~headings ~keywords text start stop =
   in
   go start;
   List.rev !heads, List.rev !nodes
-
 let read ~keywords ~file text ~start =
   let headings, nodes =
     region ~file ~headings:true ~keywords text start (String.length text)
@@ -372,10 +342,6 @@ let scan ~file text = read ~keywords:(todo_keywords text) ~file text ~start:0
 let children = function
   | Keyword { inner; _ } | Block { inner; _ } -> inner
   | Link _ | Card _ -> []
-
-(* {1 Named calls} *)
-
-(* Org keywords ignore letter case, so action names are read in lower case. *)
 let action_name (name : string Provenance.located) =
   if String.length name.value > 3 && String.lowercase_ascii (String.sub name.value 0 3) = "zk_"
   then
@@ -389,7 +355,6 @@ let occurrence (node : node Provenance.located) result =
       Rules.Matched
         { Action_rules.call = Provenance.located ?span:node.span call; taken = node.span }
   | Error errors -> Rules.Invalid errors
-
 let actions =
   Action_rules.empty
   |> Action_rules.register ~sugar:"named-keyword" (fun node (context : context) ->
@@ -409,11 +374,8 @@ let actions =
                 let body = if String.trim contents.value.text = "" then None else Some contents in
                 occurrence node (Result.bind (arguments parameters) (context.named ~name ?body)))
        | _ -> Rules.No_match)
-
 let adapter ?(values = values) ?(identities = identities) ?(actions = actions)
     ?(define = "define") ?(unknown_properties = `Ignore) frontend =
-  (* Contents keep only their own lines; they are read with the task keywords
-     of the file they come from, recorded when it was scanned. *)
   let files = Hashtbl.create 16 in
   let scan_document ~file text =
     let keywords = todo_keywords text in
@@ -430,7 +392,6 @@ let adapter ?(values = values) ?(identities = identities) ?(actions = actions)
     { Card.language; source = Fun.id; scan = scan_document; read;
       nested = (fun n -> Card n); children }
     ~values ~identities ~actions ~define frontend
-
 module Sugar = struct
   let id_target (path : string Provenance.located) =
     if String.length path.value > 3 && String.sub path.value 0 3 = "id:" then
@@ -444,7 +405,6 @@ module Sugar = struct
       | Link { path; _ } ->
           (match id_target path with Some t -> Rules.Matched (make t) | None -> Rules.No_match)
       | _ -> Rules.No_match)
-
   let include_keyword action make =
     Action_rules.bind ~sugar:"zk-include" action (fun node (context : context) ->
       match node.Provenance.value with
@@ -458,7 +418,6 @@ module Sugar = struct
                 | Rules.No_match -> Rules.Invalid [ Card.invalid ?span:value.span "expected a note ID" ])
            | _ -> Rules.Invalid [ Card.invalid ?span:value.span "expected only :target" ])
       | _ -> Rules.No_match)
-
   let nested_card action make =
     Card.nested_card (function Card n -> Some n | _ -> None) action make
 end
