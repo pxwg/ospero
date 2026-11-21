@@ -28,6 +28,7 @@ type ('heading, 'value) heading = {
 type ('heading, 'value, 'node) outline = {
   headings : ('heading, 'value) heading list;
   nodes : 'node Provenance.located list;
+  closes : int list;
 }
 
 type ('native, 'heading, 'value, 'node) language = {
@@ -82,6 +83,7 @@ type ('heading, 'value, 'node) tree = {
   head : ('heading, 'value) heading;
   id : Graph.Vertex_id.t Provenance.located;
   extent : Provenance.span;
+  heading : 'node Provenance.located list;  (** Nodes in the title, such as references. *)
   items : ('heading, 'value, 'node) item list;
 }
 
@@ -125,13 +127,22 @@ let trees ~file identities (outline : _ outline) ~stop =
     else
       match ids.(i) with
       | Rules.Matched id ->
-          let stop = governs i bound in
+          let card = tree i id (governs i bound) in
+          let stop = card.extent.stop in
           let rec skip j = if j < count && heads.(j).start < stop then skip (j + 1) else j in
-          cards (skip (i + 1)) bound (tree i id stop :: acc)
+          cards (skip (i + 1)) bound (card :: acc)
       | _ -> cards (i + 1) bound acc
+  (* An explicit close ends the innermost open card; the closes of its
+     children, each at a child's end, are theirs. *)
   and tree i id stop =
     let head = heads.(i) in
     let children = cards (i + 1) stop [] in
+    let claimed at = List.exists (fun c -> at >= c.extent.start && at <= c.extent.stop) children in
+    let stop, children =
+      match List.find_opt (fun at -> at >= head.body_start && at < stop && not (claimed at)) outline.closes with
+      | None -> stop, children
+      | Some close -> close, cards (i + 1) close []
+    in
     let own at =
       at >= head.body_start && at < stop
       && not (List.exists (fun c -> at >= c.extent.start && at < c.extent.stop) children)
@@ -147,7 +158,11 @@ let trees ~file identities (outline : _ outline) ~stop =
       List.stable_sort (fun (a, _) (b, _) -> compare a b) (nodes @ failures @ nested)
       |> List.map snd
     in
-    { head; id; extent = span head.start stop; items }
+    let heading =
+      List.filter (fun n ->
+        let at = start_of n in at >= head.title.start && at < head.title.stop) outline.nodes
+    in
+    { head; id; extent = span head.start stop; heading; items }
   in
   let roots = cards 0 stop [] in
   let outside at = not (List.exists (fun r -> at >= r.extent.start && at < r.extent.stop) roots) in
@@ -172,8 +187,17 @@ let without_identity (id : _ Provenance.located) fields =
 
 (* Undeclared fields are dropped before reading, so they are never reported. *)
 let declared_only schema fields =
-  List.filter (fun (field : _ Payload_rules.field) ->
-    List.exists (fun (s : Schema.field) -> s.name = field.name.value) schema) fields
+  let rec declared schema name =
+    match String.index_opt name '.' with
+    | None -> List.exists (fun (s : Schema.field) -> s.name = name) schema
+    | Some dot ->
+        List.exists (fun (s : Schema.field) ->
+          match s.shape with
+          | Record fields when s.name = String.sub name 0 dot ->
+              declared fields (String.sub name (dot + 1) (String.length name - dot - 1))
+          | _ -> false) schema
+  in
+  List.filter (fun (field : _ Payload_rules.field) -> declared schema field.name.value) fields
 
 let adapter lang ?(unknown_metadata = `Report) ~values ~identities ~actions ~define frontend =
   let schema =
@@ -215,10 +239,25 @@ let adapter lang ?(unknown_metadata = `Report) ~values ~identities ~actions ~def
         Payload_rules.read_metadata reader schema fields)
       |> Result.map (fun fields -> Payload.Record fields)
     in
+    (* Actions written in the title belong to the card. They precede the body,
+       located where they are written; the title keeps its text. *)
+    let heading =
+      nodes (List.map (fun n -> Node n) tree.heading)
+      |> List.filter_map (fun (n : _ Provenance.located) ->
+          let action read = Some (Provenance.located ?span:n.span (Observation.Source.Action read)) in
+          match n.value with
+          | Error found -> action (Error found)
+          | Ok node -> (
+              match Action_rules.read actions context { n with value = node } with
+              | Rules.Matched { call; _ } -> action (Ok call.value)
+              | Rules.Invalid found -> action (Error found)
+              | Rules.No_match -> None))
+    in
     let body_span = { tree.extent with start = tree.head.body_start } in
     let body =
-      Action_rules.body actions context
-        ~source:{ Text.text; language = lang.language } body_span (nodes tree.items)
+      heading
+      @ Action_rules.body actions context
+          ~source:{ Text.text; language = lang.language } body_span (nodes tree.items)
     in
     Provenance.located ~span:tree.extent
       { Observation.Source.id = tree.id;
@@ -232,7 +271,8 @@ let adapter lang ?(unknown_metadata = `Report) ~values ~identities ~actions ~def
     let file, base =
       match contents.span with Some s -> s.file, s.start | None -> "", 0
     in
-    let text = String.make base ' ' ^ contents.value.text in
+    (* Newlines keep the padding out of the first line. *)
+    let text = String.make base '\n' ^ contents.value.text in
     match parse ~file text (lang.read ~file text ~start:base) with
     | [ tree ], _ -> Ok (note text tree, tree.id)
     | [], (_ :: _ as unowned) -> Error unowned

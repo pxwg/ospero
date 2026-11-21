@@ -25,6 +25,11 @@ type node =
       supplement : Text.t Provenance.located option;
     }
   | Card of Card.nested
+  | Label of string
+  | Statement of {
+      keyword : string;
+      path : string Provenance.located option;
+    }
 
 and argument = {
   name : string Provenance.located option;
@@ -60,6 +65,7 @@ type st = {
   text : string;
   len : int;
   mutable heads : (heading, value) Card.heading list;
+  mutable closes : int list;
 }
 
 let span st start stop = { Provenance.file = st.file; start; stop }
@@ -138,28 +144,49 @@ let heading_marker st i =
   let j = span_while st i (fun c -> c = '=') in
   if j > i && (j >= st.len || st.text.[j] = ' ' || st.text.[j] = '\n') then Some (j - i) else None
 
+(* A heading runs to its line end, or past the line where a call opened on it
+   closes, as in [= #text(\n  "Title",\n) <id>]. A bracket after a blank is
+   markup and opens nothing; an unclosed call leaves the heading one line. *)
+let heading_end st i =
+  let line = line_end st i in
+  let rec go i depth =
+    if i >= st.len then line
+    else
+      match st.text.[i] with
+      | '\n' when depth = 0 -> i
+      | '\\' -> go (i + 2) depth
+      | '"' when depth > 0 -> go (skip_string st i) depth
+      | ('(' | '[' | '{') when depth > 0 || (i > 0 && (is_ident st.text.[i - 1]
+                                             || st.text.[i - 1] = ')' || st.text.[i - 1] = ']')) ->
+          go (i + 1) (depth + 1)
+      | (')' | ']' | '}') when depth > 0 -> go (i + 1) (depth - 1)
+      | _ -> go (i + 1) depth
+  in
+  go i 0
+
 (* Code mode: skip until a top-level character satisfying [stop], or an
-   unmatched closer. Content blocks inside are markup. *)
+   unmatched closer. Content blocks inside are markup; their nodes are
+   returned, since an expression renders them where it stands. *)
 let rec skip_code st i ~stop =
-  let rec go i closers =
-    if i >= st.len then st.len
+  let rec go i closers found =
+    if i >= st.len then st.len, found
     else
       let c = st.text.[i] in
-      if closers = [] && stop c then i
+      if closers = [] && stop c then i, found
       else match c with
-        | '"' -> go (skip_string st i) closers
-        | '/' when char st (i + 1) = '/' -> go (skip_line_comment st i) closers
-        | '/' when char st (i + 1) = '*' -> go (skip_block_comment st i 0) closers
-        | '(' -> go (i + 1) (')' :: closers)
-        | '{' -> go (i + 1) ('}' :: closers)
-        | '[' -> let q, _ = markup st ~top:false (i + 1) in go (q + 1) closers
+        | '"' -> go (skip_string st i) closers found
+        | '/' when char st (i + 1) = '/' -> go (skip_line_comment st i) closers found
+        | '/' when char st (i + 1) = '*' -> go (skip_block_comment st i 0) closers found
+        | '(' -> go (i + 1) (')' :: closers) found
+        | '{' -> go (i + 1) ('}' :: closers) found
+        | '[' -> let q, nodes = markup st ~top:false (i + 1) in go (q + 1) closers (found @ nodes)
         | ')' | '}' | ']' ->
             (match closers with
-             | c' :: rest when c' = c -> go (i + 1) rest
-             | _ -> i)
-        | _ -> go (i + 1) closers
+             | c' :: rest when c' = c -> go (i + 1) rest found
+             | _ -> i, found)
+        | _ -> go (i + 1) closers found
   in
-  go i []
+  go i [] []
 
 (* Markup from [i]. Nested markup stops at its unmatched closing bracket,
    whose position is returned. Top-level markup also reports headings. *)
@@ -171,6 +198,10 @@ and markup st ~top i =
     else
       let c = st.text.[i] in
       if line_start && is_blank c then go (i + 1) depth true
+      else if top && line_start && looking st i "///" && closing i then begin
+        st.closes <- line_begin st i :: st.closes;
+        go (line_end st i) depth false
+      end
       else if top && line_start && looking st i "///" then go (metadata_block i) depth false
       else if top && line_start && heading_marker st i <> None then go (heading i None) depth false
       else match c with
@@ -185,7 +216,14 @@ and markup st ~top i =
         | '/' when char st (i + 1) = '*' -> go (skip_block_comment st i 0) depth false
         | '`' -> go (skip_raw st i) depth false
         | '$' -> go (skip_math st (i + 1)) depth false
-        | '#' -> let j, found = code st i in List.iter add found; go j depth false
+        | '#' -> let j, found = code st ~top i in List.iter add found; go j depth false
+        | '<' when is_label (char st (i + 1)) ->
+            let e = span_while st (i + 1) is_label in
+            if char st e = '>' then begin
+              add (Provenance.located ~span:(span st i (e + 1)) (Label (String.sub st.text (i + 1) (e - i - 1))));
+              go (e + 1) depth false
+            end
+            else go (i + 1) depth false
         | '@' when (i = 0 || not (is_alnum st.text.[i - 1])) && is_label (char st (i + 1)) ->
             go (reference i) depth false
         | '[' when not top -> go (i + 1) (depth + 1) false
@@ -204,6 +242,11 @@ and markup st ~top i =
     add (Provenance.located ~span:(span st i stop)
            (Reference { target = at st (i + 1) j; supplement }));
     stop
+  (* [/// end], optionally [/// end <id>], closes the innermost card. *)
+  and closing i =
+    let s = span_while st (i + 3) is_blank in
+    looking st s "end"
+    && (let e = s + 3 in e >= st.len || is_blank st.text.[e] || st.text.[e] = '\n')
   (* Consecutive /// lines; metadata only when a heading follows directly. *)
   and metadata_block i =
     let block_start = line_begin st i in
@@ -231,7 +274,7 @@ and markup st ~top i =
     | None -> block_stop
   and heading i metadata =
     let level = Option.get (heading_marker st i) in
-    let e = line_end st i in
+    let e = heading_end st (i + level) in
     let t0 = span_while st (i + level) is_blank in
     let t1 = ref e in
     while !t1 > t0 && is_blank st.text.[!t1 - 1] do decr t1 done;
@@ -265,9 +308,10 @@ and markup st ~top i =
   let stop = go i 0 true in
   stop, List.rev !nodes
 
-(* An embedded expression at [#]. Calls become nodes; statements and other
-   expressions are skipped. *)
-and code st i =
+(* An embedded expression at [#]. Calls become nodes; a statement at the top
+   level of the document is a node, its content unread; other expressions are
+   skipped. *)
+and code st ~top i =
   let j = i + 1 in
   let c = char st j in
   if is_ident_start c then begin
@@ -278,7 +322,16 @@ and code st i =
     let e = path j in
     let first = String.sub st.text j (span_while st j is_ident - j) in
     if List.mem first [ "let"; "set"; "show"; "import"; "include"; "if"; "for"; "while"; "context"; "return" ]
-    then skip_code st e ~stop:(fun c -> c = '\n'), []
+    (* A statement defines rather than shows: its content is not read. *)
+    then
+      let q = fst (skip_code st e ~stop:(fun c -> c = '\n')) in
+      let path =
+        let s = skip_space st e in
+        match first, string_literal st s with
+        | "import", Some (stop, value) -> Some (Provenance.located ~span:(span st s stop) value)
+        | _ -> None
+      in
+      q, if top then [ Provenance.located ~span:(span st i q) (Statement { keyword = first; path }) ] else []
     else
       let rec postfix p arguments trailing inner =
         match char st p with
@@ -297,7 +350,7 @@ and code st i =
   end
   else match c with
     | '[' -> let q, nodes = markup st ~top:false (j + 1) in min st.len (q + 1), nodes
-    | '(' | '{' -> skip_code st j ~stop:(fun _ -> false) |> (fun q -> min st.len (q + 1)), []
+    | '(' | '{' -> let q, nodes = skip_code st j ~stop:(fun _ -> false) in min st.len (q + 1), nodes
     | _ -> j, []
 
 (* Arguments after an opening parenthesis, up to and past the closing one. *)
@@ -325,8 +378,8 @@ and arguments_list st i =
       | ',' -> items (i + 1) acc (nodes @ found)
       | ')' -> i + 1, List.rev acc, nodes @ found
       | _ ->
-          let q = skip_code st i ~stop:(fun c -> c = ',' || c = ')') in
-          items (if char st q = ',' then q + 1 else q) acc (nodes @ found)
+          let q, skipped = skip_code st i ~stop:(fun c -> c = ',' || c = ')') in
+          items (if char st q = ',' then q + 1 else q) acc (nodes @ found @ skipped)
   in
   items i [] []
 
@@ -384,16 +437,20 @@ and expr st i =
   match atom with
   | Some (e, v) when stops (char st (skip_space st e)) || skip_space st e >= st.len -> e, located i e v, nodes
   | _ ->
-      let q = skip_code st i ~stop:stops in
+      let q, skipped = skip_code st i ~stop:stops in
       let q' = let k = ref q in while !k > i && (is_blank st.text.[!k - 1] || st.text.[!k - 1] = '\n') do decr k done; !k in
-      q, located i q' (Value.Other (String.sub st.text i (q' - i))), nodes
+      q, located i q' (Value.Other (String.sub st.text i (q' - i))), nodes @ skipped
 
-let scan ~file text ~start =
-  let st = { file; text; len = String.length text; heads = [] } in
+let read ~file text ~start =
+  let st = { file; text; len = String.length text; heads = []; closes = [] } in
   let _, nodes = markup st ~top:true start in
-  { Card.headings = List.rev st.heads; nodes }
+  { Card.headings = List.rev st.heads; nodes; closes = List.rev st.closes }
 
-let children = function Call { inner; _ } -> inner | Reference _ | Card _ -> []
+let scan ~file text = read ~file text ~start:0
+
+let children = function
+  | Call { inner; _ } -> inner
+  | Reference _ | Card _ | Label _ | Statement _ -> []
 
 (* {1 Named calls} *)
 
@@ -440,8 +497,8 @@ let actions =
 let adapter ?(values = values) ?(identities = identities) ?(actions = actions)
     ?(define = "define") frontend =
   Card.adapter
-    { Card.language; source = Fun.id; scan = (fun ~file text -> scan ~file text ~start:0);
-      read = scan; nested = (fun n -> Card n); children }
+    { Card.language; source = Fun.id; scan = (fun ~file text -> scan ~file text);
+      read; nested = (fun n -> Card n); children }
     ~values ~identities ~actions ~define frontend
 
 module Sugar = struct
@@ -462,7 +519,13 @@ module Sugar = struct
   let include_note action make =
     Action_rules.bind ~sugar:"include-note" action (fun node _ ->
       match node.Provenance.value with
-      | Call { name = { value = "include-note"; _ }; trailing = [ _ ]; inner; _ } ->
+      (* The reference is the body, written after the call or as its first
+         argument; display options are left to rendering. *)
+      | Call { name = { value = "include-note"; _ }; trailing; arguments; inner; _ }
+        when List.length trailing = 1
+             || (match arguments with
+                 | { name = None; value = { value = Value.Contents _; _ } } :: _ -> true
+                 | _ -> false) ->
           (match inner with
            | [ { value = Reference { target; _ }; _ } ] -> Rules.Matched (make target)
            | _ -> Rules.Invalid [ Card.invalid ?span:node.span "include-note takes one @reference" ])

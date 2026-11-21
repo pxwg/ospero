@@ -218,7 +218,7 @@ let rec region ~file ~headings text start stop =
 
 let scan ~file text ~start =
   let headings, nodes = region ~file ~headings:true text start (String.length text) in
-  { Card.headings; nodes }
+  { Card.headings; nodes; closes = [] }
 
 let children = function Directive { inner; _ } -> inner | Card _ -> []
 

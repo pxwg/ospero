@@ -212,7 +212,40 @@ let keyword_name text pos stop =
 
 (* Blocks, keywords and links of a region. Headings are reported only at the
    top level. *)
-let rec region ~file ~headings text start stop =
+(* Org's task keywords: those of the file's [#+TODO:] sequences, else TODO
+   and DONE. Shortcut keys such as [(t)] and the [|] separator are not words. *)
+let todo_keywords text =
+  let sequence line =
+    List.find_map (fun key ->
+      if prefixed ~prefix:key line 0 (String.length line) then
+        Some (String.sub line (String.length key) (String.length line - String.length key))
+      else None) [ "#+todo:"; "#+seq_todo:"; "#+typ_todo:" ]
+  in
+  let words value =
+    String.split_on_char ' ' value
+    |> List.filter_map (fun word ->
+        let word = match String.index_opt word '(' with
+          | Some i -> String.sub word 0 i | None -> String.trim word in
+        if word = "" || word = "|" then None else Some word)
+  in
+  match List.filter_map sequence (List.map String.trim (String.split_on_char '\n' text)) with
+  | [] -> [ "TODO"; "DONE" ]
+  | sequences -> List.concat_map words sequences
+
+(* Skip a task keyword and a priority cookie such as [\[#A\]] before a title. *)
+let after_task ~keywords text start stop =
+  let word_end = ref start in
+  while !word_end < stop && not (is_space text.[!word_end]) do incr word_end done;
+  let start =
+    if List.mem (String.sub text start (!word_end - start)) keywords then
+      skip_blank text !word_end stop
+    else start
+  in
+  if start + 4 <= stop && String.sub text start 2 = "[#" && text.[start + 3] = ']' then
+    skip_blank text (start + 4) stop
+  else start
+
+let rec region ~file ~headings ~keywords text start stop =
   let heads = ref [] and nodes = ref [] in
   let add n = nodes := n :: !nodes in
   let rec go pos =
@@ -222,7 +255,10 @@ let rec region ~file ~headings text start stop =
       let s = skip_blank text pos e in
       let stars = let i = ref pos in while !i < e && text.[!i] = '*' do incr i done; !i - pos in
       if headings && stars > 0 && pos + stars < e && text.[pos + stars] = ' ' then
-        go (heading pos e stars)
+        go (if commented pos e stars then subtree_end pos stars else heading pos e stars)
+      else if s < e && text.[s] = '#' && (s + 1 = e || text.[s + 1] = ' ') then
+        (* A comment line is not read. *)
+        go (next_line text pos)
       else if prefixed ~prefix:"#+begin_" text s e then begin
         let n0 = s + 8 in
         let n1 = keyword_name text n0 e in
@@ -234,7 +270,7 @@ let rec region ~file ~headings text start stop =
             let inner_start = min close (next_line text pos) in
             let inner =
               if List.mem (String.lowercase_ascii name.value) verbatim then []
-              else snd (region ~file ~headings:false text inner_start close)
+              else snd (region ~file ~headings:false ~keywords text inner_start close)
             in
             add (Provenance.located ~span:(span file pos close_end)
                    (Block { name; parameters = at file text pa (max pa pb);
@@ -256,8 +292,21 @@ let rec region ~file ~headings text start stop =
         go (next_line text pos)
       end
       else (List.iter add (links file text s e); go (next_line text pos))
+  (* A COMMENT heading and its subtree are commented out, as Org exports them. *)
+  and commented pos e stars =
+    let t0 = after_task ~keywords text (skip_blank text (pos + stars) e) e in
+    prefixed ~prefix:"comment" text t0 e && (t0 + 7 = e || is_space text.[t0 + 7])
+  and subtree_end pos stars =
+    let rec next p =
+      if p >= stop then stop
+      else
+        let e = line_end text p in
+        let n = let i = ref p in while !i < e && text.[!i] = '*' do incr i done; !i - p in
+        if n > 0 && n <= stars && p + n < e && text.[p + n] = ' ' then p else next (next_line text p)
+    in
+    next (next_line text pos)
   and heading pos e stars =
-    let t0 = skip_blank text (pos + stars) e in
+    let t0 = after_task ~keywords text (skip_blank text (pos + stars) e) e in
     let t1 =
       (* Trailing tags such as :a:b: are not part of the title. *)
       let _, b = trim text t0 e in
@@ -312,9 +361,13 @@ let rec region ~file ~headings text start stop =
   go start;
   List.rev !heads, List.rev !nodes
 
-let scan ~file text ~start =
-  let headings, nodes = region ~file ~headings:true text start (String.length text) in
-  { Card.headings; nodes }
+let read ~keywords ~file text ~start =
+  let headings, nodes =
+    region ~file ~headings:true ~keywords text start (String.length text)
+  in
+  { Card.headings; nodes; closes = [] }
+
+let scan ~file text = read ~keywords:(todo_keywords text) ~file text ~start:0
 
 let children = function
   | Keyword { inner; _ } | Block { inner; _ } -> inner
@@ -359,9 +412,23 @@ let actions =
 
 let adapter ?(values = values) ?(identities = identities) ?(actions = actions)
     ?(define = "define") ?(unknown_properties = `Ignore) frontend =
+  (* Contents keep only their own lines; they are read with the task keywords
+     of the file they come from, recorded when it was scanned. *)
+  let files = Hashtbl.create 16 in
+  let scan_document ~file text =
+    let keywords = todo_keywords text in
+    Hashtbl.replace files file keywords;
+    read ~keywords ~file text ~start:0
+  in
+  let read ~file text ~start =
+    let keywords =
+      match Hashtbl.find_opt files file with Some k -> k | None -> todo_keywords text
+    in
+    read ~keywords ~file text ~start
+  in
   Card.adapter ~unknown_metadata:unknown_properties
-    { Card.language; source = Fun.id; scan = (fun ~file text -> scan ~file text ~start:0);
-      read = scan; nested = (fun n -> Card n); children }
+    { Card.language; source = Fun.id; scan = scan_document; read;
+      nested = (fun n -> Card n); children }
     ~values ~identities ~actions ~define frontend
 
 module Sugar = struct

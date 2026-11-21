@@ -45,6 +45,9 @@ type ('heading, 'value) heading = {
 type ('heading, 'value, 'node) outline = {
   headings : ('heading, 'value) heading list;
   nodes : 'node Provenance.located list;
+  closes : int list;
+      (** Explicit card ends, in source order; each closes the innermost card
+          still open where it stands. *)
 }
 
 type ('native, 'heading, 'value, 'node) language = {
@@ -57,7 +60,7 @@ type ('native, 'heading, 'value, 'node) language = {
           the document. *)
   read : file:string -> string -> start:int -> ('heading, 'value, 'node) outline;
       (** Read Contents in place: scan from [start] to the end of the text,
-          which is padded so that spans stay file offsets. *)
+          which is padded with newlines so that spans stay file offsets. *)
   nested : nested -> 'node;
   children : 'node -> 'node Provenance.located list;
       (** Nodes inside a node, read in its place when no body rule takes it. *)

@@ -1,7 +1,11 @@
 (** The default Org adapter.
 
     A heading whose property drawer has an [:ID:] declares a card; its other
-    properties are metadata, keys read in lower case. A named call is
+    properties are metadata, keys read in lower case, a dotted key such as
+    [:CAPTURE.TYPE:] naming a field of a record field. A title omits a leading
+    task keyword (those of the file's [#+TODO:] sequences, else TODO and DONE),
+    a priority cookie and trailing tags. A COMMENT heading and its subtree are
+    not read. A named call is
     [#+zk_review: :target b] without a body, or a [#+begin_zk_review] block
     whose contents are the body. Arguments are written [:key value]; a value
     is read by the declared field type, so [:target 2604032336] is a string in
@@ -43,6 +47,13 @@ type node =
 type context = value Card.context
 
 (** Strings, integers, booleans and lists. Records are left to project rules. *)
+(** Everything in a document, for consumers that work on its text. The adapter
+    reads the same outline. *)
+val scan : file:string -> string -> (heading, value, node) Card.outline
+
+(** Nodes inside a node: links in a keyword value, or nodes in a non-verbatim block. *)
+val children : node -> node Provenance.located list
+
 val values : value Rules.Payload_rules.t
 
 (** ["id-property"]: the [:ID:] property, in any letter case. *)
