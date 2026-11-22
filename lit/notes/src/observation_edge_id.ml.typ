@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = observation_edge_id.ml <core:src:observation_edge_id.ml>
 

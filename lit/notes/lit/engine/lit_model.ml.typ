@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = 文学编程的 Ospero 模型 <lit:engine:lit_model.ml>
 

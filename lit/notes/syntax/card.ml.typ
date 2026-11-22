@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = card.ml <syntax:card.ml>
 

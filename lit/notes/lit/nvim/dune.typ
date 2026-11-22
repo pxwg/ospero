@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = 编辑器服务的构建目标 <lit:nvim:dune>
 

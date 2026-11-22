@@ -1,4 +1,4 @@
-#import "/reader/book.typ": card-source
+#import "/reader/book.typ": card-source, chunk
 #show: card-source
 
 = 笔记库的语义计算与维护 <local-to-global>

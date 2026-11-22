@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = policy_wiring.ml <core:src:policy_wiring.ml>
 

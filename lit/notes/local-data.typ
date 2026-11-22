@@ -1,3 +1,6 @@
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
+
 = 局部信息提取 <local-data>
 
 为了实现局部语义信息的编码，我们需要首先使用

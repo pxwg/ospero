@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = OCaml 编辑请求如何映回卡片 <lit:nvim:lit_ocaml.ml>
 

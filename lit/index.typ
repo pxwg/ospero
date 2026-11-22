@@ -1,4 +1,4 @@
-#import "/reader/book.typ": card-source, include-note, source-index
+#import "/reader/book.typ": card-source, chunk, include-note, source-index
 #show: card-source
 
 = Ospero <home>

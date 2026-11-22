@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = 从观察到 HTML 阅读器 <lit:lit_reader.ml>
 

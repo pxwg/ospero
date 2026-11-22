@@ -1,4 +1,5 @@
-#import "/reader/book.typ": chunk
+#import "/reader/book.typ": card-source, chunk
+#show: card-source
 
 = 编辑器如何读取观察 <lit:nvim:lit_lsp.ml>
 
