@@ -11,7 +11,7 @@
   ```
 ]
 
-在这个项目中，@local-data[]需要使用嵌入 (embedded) 在各个标记语言中的 DSL 来实现。原则上，用户可以使用 `Ocaml` 语言编写属于自己的 DSL parser 并实现自己的领域特定语义。因此，另一部份组件将为用户构建项目所需 DSL parser 提供支持，即下列 `Ospero.Syntax` 组件：
+在这个项目中，@local-data[]需要使用各个标记语言中的@embedded-dsl 来实现。原则上，用户可以使用 `Ocaml` 语言编写属于自己的 DSL parser 并实现自己的领域特定语义。因此，另一部份组件将为用户构建项目所需 DSL parser 提供支持，即下列 `Ospero.Syntax` 组件：
 
 #chunk(id: <source-ospero-ml-syntax>)[
   ```ocaml
