@@ -74,7 +74,13 @@ return function(root)
           return vim.notify("标题必须为单行", vim.log.levels.ERROR)
         end
         local file = notes .. "/" .. name .. ".typ"
-        local text = ("= %s <%s>\n\n"):format(title, name)
+        local text = ([[#import "/reader/book.typ": card-source, chunk
+#show: card-source
+
+= %s <%s>
+
+
+]]):format(title, name)
         local fd, err = vim.uv.fs_open(file, "wx", 438)
         if not fd then
           return vim.notify(err, vim.log.levels.ERROR)
@@ -162,7 +168,9 @@ return function(root)
             local loc = symbol.location
             local start = loc.range.start
             items[#items + 1] = {
-              text = symbol.name .. "  " .. symbol.containerName,
+              text = symbol.name .. " " .. symbol.containerName,
+              title = symbol.name,
+              id = symbol.containerName,
               file = vim.uri_to_fname(loc.uri),
               pos = { start.line + 1, start.character },
             }
@@ -171,7 +179,31 @@ return function(root)
         require("snacks").picker.pick({
           title = "文学卡片",
           items = items,
-          format = "text",
+          format = function(item, picker)
+            local width = vim.api.nvim_win_get_width(picker.list.win.win)
+            local id = require("snacks").picker.util.truncate(item.id, math.max(width - 4, 1))
+            local title = item.title
+            -- Leave room for the selection marker and a gap before the ID.
+            local available = math.max(width - vim.api.nvim_strwidth(id) - 3, 1)
+            if vim.api.nvim_strwidth(title) > available then
+              local length = available - 1
+              local prefix = vim.fn.strcharpart(title, 0, length)
+              while vim.api.nvim_strwidth(prefix) >= available do
+                length = length - 1
+                prefix = vim.fn.strcharpart(title, 0, length)
+              end
+              title = prefix .. "…"
+            end
+            return {
+              { title },
+              {
+                col = 0,
+                virt_text = { { id, "SnacksPickerComment" } },
+                virt_text_pos = "right_align",
+                hl_mode = "combine",
+              },
+            }
+          end,
           preview = "file",
         })
       end, buf)
