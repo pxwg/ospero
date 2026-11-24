@@ -121,9 +121,15 @@ return function(root)
       end,
       flags = { debounce_text_changes = 180 },
       init_options = { ocamlProjection = vim.fn.executable("opam") == 1 },
-      on_exit = function(_, _, id) vim.schedule(function() ocaml.reset(id) end) end,
+      on_exit = function(_, _, id)
+        vim.schedule(function()
+          ocaml.reset(id)
+        end)
+      end,
       handlers = {
-        ["ospero/projection"] = function(_, params, ctx) ocaml.update(params, ctx) end,
+        ["ospero/projection"] = function(_, params, ctx)
+          ocaml.update(params, ctx)
+        end,
         ["ospero/titles"] = function(_, params)
           local target = vim.uri_to_bufnr(params.uri)
           if vim.api.nvim_buf_is_loaded(target) and vim.lsp.util.buf_versions[target] == params.version then
@@ -139,8 +145,8 @@ return function(root)
     local function map(key, action, desc)
       vim.keymap.set("n", key, action, { buffer = buf, desc = desc })
     end
-    map("K", vim.lsp.buf.hover, "查看卡片或 OCaml 类型")
-    map("gd", vim.lsp.buf.definition, "跳转到卡片或 OCaml 定义")
+    -- map("K", vim.lsp.buf.hover, "查看卡片或 OCaml 类型")
+    -- map("gd", vim.lsp.buf.definition, "跳转到卡片或 OCaml 定义")
     map("zf", function()
       local server = vim.lsp.get_client_by_id(client)
       if not server then
