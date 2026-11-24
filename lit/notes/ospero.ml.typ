@@ -3,7 +3,7 @@
 
 = 项目结构 <ospero.ml>
 
-整个项目分为两个组件，一个是负责@local-to-global[]的 `Ospero.Kernel` 组件：
+@home 分为两个组件，一个是负责@local-to-global[]的 `Ospero.Kernel` 组件：
 
 #chunk(id: <source-ospero-ml>)[
   ```ocaml
