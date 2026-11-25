@@ -97,16 +97,64 @@ return function(root)
     end)
   end
 
-  local function attach(buf)
-    if not belongs(buf) then
-      return
+  local function show_cards(server, buf)
+    local sent = server:request("workspace/symbol", { query = "" }, function(err, symbols)
+      if err then
+        return vim.notify(err.message, vim.log.levels.ERROR)
+      end
+      local items = {}
+      for _, symbol in ipairs(symbols or {}) do
+        if symbol.kind == vim.lsp.protocol.SymbolKind.Object then
+          local loc = symbol.location
+          local start = loc.range.start
+          items[#items + 1] = {
+            text = symbol.name .. " " .. symbol.containerName,
+            title = symbol.name,
+            id = symbol.containerName,
+            file = vim.uri_to_fname(loc.uri),
+            pos = { start.line + 1, start.character },
+          }
+        end
+      end
+      require("snacks").picker.pick({
+        title = "文学卡片",
+        items = items,
+        format = function(item, picker)
+          local width = vim.api.nvim_win_get_width(picker.list.win.win)
+          local id = require("snacks").picker.util.truncate(item.id, math.max(width - 4, 1))
+          local title = item.title
+          -- Leave room for the selection marker and a gap before the ID.
+          local available = math.max(width - vim.api.nvim_strwidth(id) - 3, 1)
+          if vim.api.nvim_strwidth(title) > available then
+            local length = available - 1
+            local prefix = vim.fn.strcharpart(title, 0, length)
+            while vim.api.nvim_strwidth(prefix) >= available do
+              length = length - 1
+              prefix = vim.fn.strcharpart(title, 0, length)
+            end
+            title = prefix .. "…"
+          end
+          return {
+            { title },
+            {
+              col = 0,
+              virt_text = { { id, "SnacksPickerComment" } },
+              virt_text_pos = "right_align",
+              hl_mode = "combine",
+            },
+          }
+        end,
+        preview = "file",
+      })
+    end, buf)
+    if not sent then
+      vim.notify("无法发送文学卡片搜索请求", vim.log.levels.ERROR)
     end
-    start_tinymist(buf)
-    -- Clear the command left by an earlier version when reloading this exrc.
-    pcall(vim.api.nvim_buf_del_user_command, buf, "LitWeave")
-    vim.api.nvim_buf_create_user_command(buf, "LitNew", new_card, { force = true })
-    vim.keymap.set("n", "<leader>zn", new_card, { buffer = buf, desc = "新建文学卡片" })
-    local client = vim.lsp.start({
+  end
+
+  local pending_search
+  local function start_lit(opts)
+    return vim.lsp.start({
       name = "ospero-lit",
       root_dir = root,
       cmd = {
@@ -127,9 +175,24 @@ return function(root)
       end,
       flags = { debounce_text_changes = 180 },
       init_options = { ocamlProjection = vim.fn.executable("opam") == 1 },
+      on_init = function(client)
+        if pending_search and pending_search.id == client.id then
+          local buf = pending_search.buf
+          pending_search = nil
+          vim.schedule(function()
+            if vim.api.nvim_buf_is_valid(buf) then
+              show_cards(client, buf)
+            end
+          end)
+        end
+      end,
       on_exit = function(_, _, id)
         vim.schedule(function()
           ocaml.reset(id)
+          if pending_search and pending_search.id == id then
+            pending_search = nil
+            vim.notify("文学卡片搜索服务启动失败", vim.log.levels.ERROR)
+          end
         end)
       end,
       handlers = {
@@ -143,71 +206,50 @@ return function(root)
           end
         end,
       },
-    }, { bufnr = buf })
+    }, opts)
+  end
+
+  local function find_card()
+    local buf = vim.api.nvim_get_current_buf()
+    local id = start_lit({ attach = false })
+    local client = id and vim.lsp.get_client_by_id(id)
     if not client then
       return
     end
-    ocaml.attach(buf)
-    local function map(key, action, desc)
-      vim.keymap.set("n", key, action, { buffer = buf, desc = desc })
+    if client.initialized then
+      show_cards(client, buf)
+    else
+      pending_search = { id = id, buf = buf }
     end
-    -- map("K", vim.lsp.buf.hover, "查看卡片或 OCaml 类型")
-    -- map("gd", vim.lsp.buf.definition, "跳转到卡片或 OCaml 定义")
-    map("zf", function()
-      local server = vim.lsp.get_client_by_id(client)
-      if not server then
-        return
-      end
-      server:request("workspace/symbol", { query = "" }, function(err, symbols)
-        if err then
-          return vim.notify(err.message, vim.log.levels.ERROR)
-        end
-        local items = {}
-        for _, symbol in ipairs(symbols or {}) do
-          if symbol.kind == vim.lsp.protocol.SymbolKind.Object then
-            local loc = symbol.location
-            local start = loc.range.start
-            items[#items + 1] = {
-              text = symbol.name .. " " .. symbol.containerName,
-              title = symbol.name,
-              id = symbol.containerName,
-              file = vim.uri_to_fname(loc.uri),
-              pos = { start.line + 1, start.character },
-            }
-          end
-        end
-        require("snacks").picker.pick({
-          title = "文学卡片",
-          items = items,
-          format = function(item, picker)
-            local width = vim.api.nvim_win_get_width(picker.list.win.win)
-            local id = require("snacks").picker.util.truncate(item.id, math.max(width - 4, 1))
-            local title = item.title
-            -- Leave room for the selection marker and a gap before the ID.
-            local available = math.max(width - vim.api.nvim_strwidth(id) - 3, 1)
-            if vim.api.nvim_strwidth(title) > available then
-              local length = available - 1
-              local prefix = vim.fn.strcharpart(title, 0, length)
-              while vim.api.nvim_strwidth(prefix) >= available do
-                length = length - 1
-                prefix = vim.fn.strcharpart(title, 0, length)
-              end
-              title = prefix .. "…"
-            end
-            return {
-              { title },
-              {
-                col = 0,
-                virt_text = { { id, "SnacksPickerComment" } },
-                virt_text_pos = "right_align",
-                hl_mode = "combine",
-              },
-            }
-          end,
-          preview = "file",
-        })
-      end, buf)
-    end, "搜索文学卡片")
+  end
+
+  vim.api.nvim_create_user_command("LitNew", new_card, { force = true, desc = "新建文学卡片" })
+  vim.api.nvim_create_user_command("LitFind", find_card, { force = true, desc = "搜索文学卡片" })
+
+  local function map_project_keys(buf)
+    vim.keymap.set("n", "<leader>zn", new_card, { buffer = buf, desc = "新建文学卡片" })
+    vim.keymap.set("n", "zf", find_card, { buffer = buf, desc = "搜索文学卡片" })
+  end
+
+  local function map_start_buffer(buf)
+    if vim.bo[buf].filetype == "hello" or (vim.bo[buf].buftype == "" and vim.api.nvim_buf_get_name(buf) == "") then
+      map_project_keys(buf)
+    end
+  end
+
+  local function attach(buf)
+    if not belongs(buf) then
+      return
+    end
+    start_tinymist(buf)
+    -- Clear buffer commands left by earlier versions when reloading this exrc.
+    pcall(vim.api.nvim_buf_del_user_command, buf, "LitWeave")
+    pcall(vim.api.nvim_buf_del_user_command, buf, "LitNew")
+    map_project_keys(buf)
+    if not start_lit({ bufnr = buf }) then
+      return
+    end
+    ocaml.attach(buf)
     local function command(name, argv, done)
       vim.api.nvim_buf_create_user_command(buf, name, function()
         vim.system(
@@ -261,6 +303,19 @@ return function(root)
       attach(e.buf)
     end,
   })
+  vim.api.nvim_create_autocmd("FileType", {
+    group = group,
+    pattern = "hello",
+    callback = function(e)
+      map_start_buffer(e.buf)
+    end,
+  })
+  vim.api.nvim_create_autocmd("VimEnter", {
+    group = group,
+    callback = function(e)
+      map_start_buffer(e.buf)
+    end,
+  })
   vim.api.nvim_create_autocmd({ "BufWinEnter", "WinEnter" }, { group = group, callback = configure_window })
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "ModeChanged", "WinEnter", "WinClosed" }, {
     group = group,
@@ -286,6 +341,7 @@ return function(root)
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(buf) then
       attach(buf)
+      map_start_buffer(buf)
     end
   end
   configure_window()

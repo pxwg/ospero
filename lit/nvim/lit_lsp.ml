@@ -141,7 +141,13 @@ let serve workspace =
         end else return () in
         return `Null
     | "workspace/symbol" | "textDocument/completion" ->
-        (match !snapshot with
+        let current =
+          if method_ = "workspace/symbol" && Files.is_empty !buffers then
+            let files = sources workspace in
+            let obs, _ = observe_sources files in
+            Some (files, obs)
+          else !snapshot in
+        (match current with
          | None -> return (`List [])
          | Some (sources, obs) ->
              let query = match member "query" params with `String q -> String.lowercase_ascii q | _ -> "" in
